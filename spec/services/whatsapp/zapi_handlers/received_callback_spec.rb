@@ -455,6 +455,14 @@ describe Whatsapp::ZapiHandlers::ReceivedCallback do
       end.not_to change(Message, :count)
     end
 
+    it 'does not process messages with notification key' do
+      notification_params = params.merge(notification: 'REVOKE')
+
+      expect do
+        Whatsapp::IncomingMessageZapiService.new(inbox: inbox, params: notification_params).perform
+      end.not_to change(Message, :count)
+    end
+
     it 'handles edited messages' do
       service.perform
       original_message = Message.last
@@ -949,6 +957,206 @@ describe Whatsapp::ZapiHandlers::ReceivedCallback do
         attachment = message.attachments.first
         expect(attachment.file.filename.to_s).to eq('report.xlsx')
         expect(attachment.file.content_type).to eq('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      end
+    end
+
+    context 'when processing contact message' do
+      context 'with single phone number' do
+        let(:params) do
+          {
+            type: 'ReceivedCallback',
+            messageId: 'contact_123',
+            momment: Time.current.to_i * 1000,
+            phone: '1234567890',
+            chatLid: '1234567890@lid',
+            fromMe: false,
+            contact: {
+              displayName: 'Test Contact Name',
+              vCard: "BEGIN:VCARD\nVERSION:3.0\nFN:Test Contact Name\nTEL;type=CELL:+1111111111\nEND:VCARD",
+              phones: ['1111111111']
+            }
+          }
+        end
+
+        it 'creates a message with contact attachment' do
+          expect do
+            service.perform
+          end.to change(Message, :count).by(1)
+
+          message = Message.last
+          expect(message.content).to eq('Test Contact Name')
+          expect(message.attachments.count).to eq(1)
+        end
+
+        it 'creates contact attachment with correct file_type' do
+          service.perform
+
+          attachment = Message.last.attachments.first
+          expect(attachment.file_type).to eq('contact')
+        end
+
+        it 'stores phone number in fallback_title' do
+          service.perform
+
+          attachment = Message.last.attachments.first
+          expect(attachment.fallback_title).to eq('1111111111')
+        end
+
+        it 'extracts firstName and lastName from displayName' do
+          service.perform
+
+          attachment = Message.last.attachments.first
+          expect(attachment.meta['firstName']).to eq('Test')
+          expect(attachment.meta['lastName']).to eq('Contact Name')
+        end
+      end
+
+      context 'with multiple phone numbers' do
+        let(:params) do
+          {
+            type: 'ReceivedCallback',
+            messageId: 'contact_456',
+            momment: Time.current.to_i * 1000,
+            phone: '1234567890',
+            chatLid: '1234567890@lid',
+            fromMe: false,
+            contact: {
+              displayName: 'Sample User',
+              vCard: "BEGIN:VCARD\nVERSION:3.0\nFN:Sample User\nTEL;type=CELL:+2222222222\nTEL;type=WORK:+3333333333\nEND:VCARD",
+              phones: %w[2222222222 3333333333]
+            }
+          }
+        end
+
+        it 'creates a message for each phone number' do
+          expect do
+            service.perform
+          end.to change(Message, :count).by(2)
+
+          messages = Message.last(2)
+          expect(messages.all? { |m| m.content == 'Sample User' }).to be(true)
+        end
+
+        it 'creates an attachment for each phone number' do
+          service.perform
+
+          messages = Message.last(2)
+          expect(messages[0].attachments.count).to eq(1)
+          expect(messages[1].attachments.count).to eq(1)
+        end
+
+        it 'stores different phone numbers in fallback_title' do
+          service.perform
+
+          attachments = Message.last(2).map { |m| m.attachments.first }
+          expect(attachments[0].fallback_title).to eq('2222222222')
+          expect(attachments[1].fallback_title).to eq('3333333333')
+        end
+
+        it 'uses the same source_id for all messages' do
+          service.perform
+
+          messages = Message.last(2)
+          expect(messages.map(&:source_id).uniq).to eq(['contact_456'])
+        end
+      end
+
+      context 'with no phone numbers' do
+        let(:params) do
+          {
+            type: 'ReceivedCallback',
+            messageId: 'contact_789',
+            momment: Time.current.to_i * 1000,
+            phone: '1234567890',
+            chatLid: '1234567890@lid',
+            fromMe: false,
+            contact: {
+              displayName: 'Test User',
+              vCard: "BEGIN:VCARD\nVERSION:3.0\nFN:Test User\nEND:VCARD",
+              phones: []
+            }
+          }
+        end
+
+        it 'creates message with fallback text' do
+          expect do
+            service.perform
+          end.to change(Message, :count).by(1)
+
+          message = Message.last
+          expect(message.content).to eq('Test User')
+        end
+
+        it 'creates attachment with "Phone number is not available" as fallback_title' do
+          service.perform
+
+          attachment = Message.last.attachments.first
+          expect(attachment.fallback_title).to eq('Phone number is not available')
+        end
+      end
+
+      context 'with single-word name' do
+        let(:params) do
+          {
+            type: 'ReceivedCallback',
+            messageId: 'contact_single',
+            momment: Time.current.to_i * 1000,
+            phone: '1234567890',
+            chatLid: '1234567890@lid',
+            fromMe: false,
+            contact: {
+              displayName: 'SingleName',
+              vCard: "BEGIN:VCARD\nVERSION:3.0\nFN:SingleName\nTEL:+4444444444\nEND:VCARD",
+              phones: ['4444444444']
+            }
+          }
+        end
+
+        it 'extracts firstName only when no last name' do
+          service.perform
+
+          attachment = Message.last.attachments.first
+          expect(attachment.meta['firstName']).to eq('SingleName')
+          expect(attachment.meta.key?('lastName')).to be(false)
+        end
+      end
+
+      context 'when contact message comes from user (outgoing)' do
+        let(:params) do
+          {
+            type: 'ReceivedCallback',
+            messageId: 'contact_outgoing',
+            momment: Time.current.to_i * 1000,
+            phone: '1234567890',
+            chatLid: '1234567890@lid',
+            fromMe: true,
+            contact: {
+              displayName: 'Outgoing Contact',
+              vCard: "BEGIN:VCARD\nVERSION:3.0\nFN:Outgoing Contact\nTEL:+5555555555\nEND:VCARD",
+              phones: ['5555555555']
+            }
+          }
+        end
+
+        before do
+          create(:account_user, account: inbox.account)
+        end
+
+        it 'creates outgoing message' do
+          service.perform
+
+          message = Message.last
+          expect(message.message_type).to eq('outgoing')
+          expect(message.sender_type).to eq('User')
+        end
+
+        it 'creates contact attachment for outgoing message' do
+          service.perform
+
+          message = Message.last
+          expect(message.attachments.count).to eq(1)
+          expect(message.attachments.first.file_type).to eq('contact')
+        end
       end
     end
   end

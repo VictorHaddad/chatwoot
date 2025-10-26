@@ -13,6 +13,7 @@ module Events::Types
 
   # channel events
   WEBWIDGET_TRIGGERED = 'webwidget.triggered'
+  PROVIDER_EVENT_RECEIVED = 'provider.event_received'
 
   # conversation events
   CONVERSATION_CREATED = 'conversation.created'

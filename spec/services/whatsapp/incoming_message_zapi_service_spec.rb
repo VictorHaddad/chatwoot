@@ -35,5 +35,20 @@ describe Whatsapp::IncomingMessageZapiService do
         expect(Rails.logger).to have_received(:warn).with(/Z-API unsupported event/)
       end
     end
+
+    it 'dispatches the provider.event_received event' do
+      params = { type: 'some_event' }
+      allow(Rails.configuration.dispatcher).to receive(:dispatch)
+
+      described_class.new(inbox: inbox, params: params).perform
+
+      expect(Rails.configuration.dispatcher).to have_received(:dispatch).with(
+        Events::Types::PROVIDER_EVENT_RECEIVED,
+        kind_of(Time),
+        inbox: inbox,
+        event: params[:type],
+        payload: params
+      )
+    end
   end
 end

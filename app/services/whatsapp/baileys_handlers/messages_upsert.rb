@@ -45,17 +45,26 @@ module Whatsapp::BaileysHandlers::MessagesUpsert
     push_name = contact_name
     source_id = phone_number_from_jid
     contact_inbox = ::ContactInboxWithContactBuilder.new(
-      # FIXME: update the source_id to complete jid in future
+      # FIXME: update the source_id to use sender LID
       source_id: source_id,
       inbox: inbox,
-      contact_attributes: { name: push_name, phone_number: "+#{source_id}" }
+      contact_attributes: { name: push_name, phone_number: "+#{source_id}", identifier: sender_lid }
     ).perform
 
     @contact_inbox = contact_inbox
     @contact = contact_inbox.contact
 
     @contact.update!(name: push_name) if @contact.name == source_id
+    # NOTE: Backwards compatibility for previous contacts created without identifier.
+    # Should be removed in the distant future, since all contacts should be created with identifier.
+    update_contact_identifier
     try_update_contact_avatar
+  end
+
+  def update_contact_identifier
+    return if @contact.identifier.present?
+
+    @contact.update!(identifier: sender_lid)
   end
 
   def handle_create_message

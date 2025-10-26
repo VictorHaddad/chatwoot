@@ -9,6 +9,7 @@ import WhatsappEmbeddedSignup from './WhatsappEmbeddedSignup.vue';
 import ChannelSelector from 'dashboard/components/ChannelSelector.vue';
 import BaileysWhatsapp from './BaileysWhatsapp.vue';
 import ZapiWhatsapp from './ZapiWhatsapp.vue';
+import PromoBanner from 'dashboard/components-next/banner/PromoBanner.vue';
 import { usePolicy } from 'dashboard/composables/usePolicy';
 import { FEATURE_FLAGS } from 'dashboard/featureFlags';
 
@@ -115,6 +116,32 @@ const handleManualLinkClick = () => {
           :description="provider.description"
           :icon="provider.icon"
           @click="selectProvider(provider.key)"
+        />
+      </div>
+
+      <div
+        v-if="isFeatureFlagEnabled(FEATURE_FLAGS.CHANNEL_ZAPI)"
+        class="mt-6 relative overflow-visible"
+      >
+        <img
+          src="~dashboard/assets/images/curved-arrow-red.svg"
+          alt=""
+          class="absolute -top-12 right-4 w-20 h-20 pointer-events-none z-10"
+        />
+        <PromoBanner
+          :title="
+            $t('INBOX_MGMT.ADD.WHATSAPP.SELECT_PROVIDER.ZAPI_PROMO.TITLE')
+          "
+          :description="
+            $t('INBOX_MGMT.ADD.WHATSAPP.SELECT_PROVIDER.ZAPI_PROMO.DESCRIPTION')
+          "
+          variant="success"
+          logo-src="/assets/images/dashboard/channels/z-api/z-api-dark-green.png"
+          logo-alt="Z-API"
+          :cta-text="
+            $t('INBOX_MGMT.ADD.WHATSAPP.SELECT_PROVIDER.ZAPI_PROMO.CTA')
+          "
+          @cta-click="selectProvider(PROVIDER_TYPES.ZAPI)"
         />
       </div>
     </div>

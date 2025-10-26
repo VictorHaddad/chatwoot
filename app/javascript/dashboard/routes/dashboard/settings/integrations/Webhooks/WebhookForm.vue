@@ -20,6 +20,7 @@ const SUPPORTED_WEBHOOK_EVENTS = [
   'contact_updated',
   'conversation_typing_on',
   'conversation_typing_off',
+  'provider_event_received',
 ];
 
 const localhostUrl = value => {

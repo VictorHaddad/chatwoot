@@ -91,6 +91,19 @@ class WebhookListener < BaseListener
     handle_typing_status(__method__.to_s, event)
   end
 
+  def provider_event_received(event)
+    inbox, account = extract_inbox_and_account(event)
+
+    payload = {
+      event: __method__.to_s,
+      inbox: inbox.webhook_data,
+      account: account.webhook_data,
+      provider_event: event.data[:event],
+      provider_event_data: event.data[:payload]
+    }
+    deliver_account_webhooks(payload, account)
+  end
+
   private
 
   def handle_typing_status(event_name, event)

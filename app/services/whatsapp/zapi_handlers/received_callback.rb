@@ -33,17 +33,19 @@ module Whatsapp::ZapiHandlers::ReceivedCallback # rubocop:disable Metrics/Module
     !@raw_message[:isGroup] &&
       !@raw_message[:isNewsletter] &&
       !@raw_message[:broadcast] &&
-      !@raw_message[:isStatusReply]
+      !@raw_message[:isStatusReply] &&
+      !@raw_message.key?(:notification)
   end
 
-  def message_type # rubocop:disable Metrics/CyclomaticComplexity
-    return 'reaction' if @raw_message.key?(:reaction)
+  def message_type # rubocop:disable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity
     return 'text' if @raw_message.key?(:text)
+    return 'reaction' if @raw_message.key?(:reaction)
+    return 'audio' if @raw_message.key?(:audio)
     return 'image' if @raw_message.key?(:image)
     return 'sticker' if @raw_message.key?(:sticker)
-    return 'audio' if @raw_message.key?(:audio)
     return 'video' if @raw_message.key?(:video)
     return 'file' if @raw_message.key?(:document)
+    return 'contact' if @raw_message.key?(:contact)
 
     'unsupported'
   end
@@ -60,6 +62,8 @@ module Whatsapp::ZapiHandlers::ReceivedCallback # rubocop:disable Metrics/Module
       @raw_message.dig(:document, :fileName)
     when 'reaction'
       @raw_message.dig(:reaction, :value)
+    when 'contact'
+      @raw_message.dig(:contact, :displayName)
     end
   end
 
@@ -102,10 +106,35 @@ module Whatsapp::ZapiHandlers::ReceivedCallback # rubocop:disable Metrics/Module
   end
 
   def handle_create_message
-    create_message(attach_media: %w[image sticker file video audio].include?(message_type))
+    if message_type == 'contact'
+      create_contact_message
+    else
+      create_message(attach_media: %w[image sticker file video audio].include?(message_type))
+    end
+  end
+
+  def create_contact_message
+    contact_data = @raw_message[:contact]
+    phones = contact_data[:phones] || []
+    phones = ['Phone number is not available'] if phones.blank?
+
+    phones.each do |phone|
+      build_message
+      attach_contact(phone, contact_data)
+      @message.save!
+    end
+
+    notify_channel_of_received_message
   end
 
   def create_message(attach_media: false)
+    build_message
+    handle_attach_media if attach_media
+    @message.save!
+    notify_channel_of_received_message
+  end
+
+  def build_message
     @message = @conversation.messages.build(
       content: message_content,
       account_id: @inbox.account_id,
@@ -116,11 +145,9 @@ module Whatsapp::ZapiHandlers::ReceivedCallback # rubocop:disable Metrics/Module
       message_type: incoming_message? ? :incoming : :outgoing,
       content_attributes: message_content_attributes
     )
+  end
 
-    handle_attach_media if attach_media
-
-    @message.save!
-
+  def notify_channel_of_received_message
     inbox.channel.received_messages([@message], @conversation) if incoming_message?
   end
 
@@ -138,6 +165,20 @@ module Whatsapp::ZapiHandlers::ReceivedCallback # rubocop:disable Metrics/Module
     content_attributes[:in_reply_to_external_id] = @raw_message[:referenceMessageId] if @raw_message[:referenceMessageId].present?
 
     content_attributes
+  end
+
+  def attach_contact(phone, contact_data)
+    name_parts = contact_data[:displayName]&.split || []
+
+    @message.attachments.new(
+      account_id: @message.account_id,
+      file_type: :contact,
+      fallback_title: phone.to_s,
+      meta: {
+        firstName: name_parts.first,
+        lastName: name_parts.drop(1).join(' ')
+      }.compact_blank
+    )
   end
 
   def handle_attach_media

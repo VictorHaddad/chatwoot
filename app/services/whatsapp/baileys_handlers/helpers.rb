@@ -7,6 +7,10 @@ module Whatsapp::BaileysHandlers::Helpers # rubocop:disable Metrics/ModuleLength
     @raw_message[:key][:id]
   end
 
+  def sender_lid
+    @raw_message[:key][:senderLid]
+  end
+
   def incoming?
     !@raw_message[:key][:fromMe]
   end
