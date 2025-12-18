@@ -13,6 +13,9 @@ jobs:
       contents: read
       packages: write
 
+    env:
+      IMAGE_NAME: ghcr.io/victorhaddad/chatwoot
+
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
@@ -28,10 +31,9 @@ jobs:
         run: |
           docker build \
             -f docker/Dockerfile \
-            -t ghcr.io/${{ github.repository }}:latest \
+            -t $IMAGE_NAME:latest \
             .
 
       - name: Push da imagem
         run: |
-          docker push ghcr.io/${{ github.repository }}:latest
-       
+          docker push $IMAGE_NAME:latest
