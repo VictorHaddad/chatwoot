@@ -32,6 +32,7 @@ RSpec.describe 'Inboxes API', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         expect(JSON.parse(response.body, symbolize_names: true)[:payload].size).to eq(2)
       end
 
@@ -95,6 +96,7 @@ RSpec.describe 'Inboxes API', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         expect(JSON.parse(response.body, symbolize_names: true)[:id]).to eq(inbox.id)
       end
 
@@ -383,6 +385,7 @@ RSpec.describe 'Inboxes API', type: :request do
              as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         expect(response.body).to include('test.com')
       end
 
@@ -478,6 +481,7 @@ RSpec.describe 'Inboxes API', type: :request do
               as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         expect(inbox.reload.enable_auto_assignment).to be_falsey
         expect(inbox.reload.portal_id).to eq(portal.id)
         expect(response.parsed_body['name']).to eq 'new test inbox'
@@ -631,6 +635,7 @@ RSpec.describe 'Inboxes API', type: :request do
 
       it 'updates smtp configuration with starttls encryption' do
         smtp_connection = double
+        allow(smtp_connection).to receive(:open_timeout=).and_return(10)
         allow(smtp_connection).to receive(:start).and_return(true)
         allow(smtp_connection).to receive(:finish).and_return(true)
         allow(smtp_connection).to receive(:respond_to?).and_return(true)
@@ -661,6 +666,7 @@ RSpec.describe 'Inboxes API', type: :request do
 
       it 'updates smtp configuration with ssl/tls encryption' do
         smtp_connection = double
+        allow(smtp_connection).to receive(:open_timeout=).and_return(10)
         allow(smtp_connection).to receive(:start).and_return(true)
         allow(smtp_connection).to receive(:finish).and_return(true)
         allow(smtp_connection).to receive(:respond_to?).and_return(true)
@@ -691,6 +697,7 @@ RSpec.describe 'Inboxes API', type: :request do
 
       it 'updates smtp configuration with authentication mechanism' do
         smtp_connection = double
+        allow(smtp_connection).to receive(:open_timeout=).and_return(10)
         allow(smtp_connection).to receive(:start).and_return(true)
         allow(smtp_connection).to receive(:finish).and_return(true)
         allow(smtp_connection).to receive(:respond_to?).and_return(true)
@@ -803,6 +810,101 @@ RSpec.describe 'Inboxes API', type: :request do
           expect(found_inbox['csat_config']).to be_present
           expect(found_inbox['csat_config']['display_type']).to eq('emoji')
         end
+      end
+
+      it 'successfully updates inbox with template configuration' do
+        csat_config_with_template = csat_config.merge({
+                                                        'template' => {
+                                                          'name' => 'custom_survey_template',
+                                                          'template_id' => '123456789',
+                                                          'language' => 'en',
+                                                          'created_at' => Time.current.iso8601
+                                                        }
+                                                      })
+
+        patch "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}",
+              params: {
+                csat_survey_enabled: true,
+                csat_config: csat_config_with_template
+              },
+              headers: admin.create_new_auth_token,
+              as: :json
+
+        expect(response).to have_http_status(:success)
+
+        inbox.reload
+        template_config = inbox.csat_config['template']
+        expect(template_config).to be_present
+        expect(template_config['name']).to eq('custom_survey_template')
+        expect(template_config['template_id']).to eq('123456789')
+        expect(template_config['language']).to eq('en')
+      end
+
+      it 'returns template configuration in inbox details' do
+        csat_config_with_template = csat_config.merge({
+                                                        'template' => {
+                                                          'name' => 'custom_survey_template',
+                                                          'template_id' => '123456789',
+                                                          'language' => 'en',
+                                                          'created_at' => Time.current.iso8601
+                                                        }
+                                                      })
+
+        patch "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}",
+              params: {
+                csat_survey_enabled: true,
+                csat_config: csat_config_with_template
+              },
+              headers: admin.create_new_auth_token,
+              as: :json
+
+        get "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}",
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        json_response = response.parsed_body
+        template_config = json_response['csat_config']['template']
+
+        expect(template_config).to be_present
+        expect(template_config['name']).to eq('custom_survey_template')
+        expect(template_config['template_id']).to eq('123456789')
+        expect(template_config['language']).to eq('en')
+        expect(template_config['created_at']).to be_present
+      end
+
+      it 'removes template configuration when not provided in update' do
+        # First set up template configuration
+        csat_config_with_template = csat_config.merge({
+                                                        'template' => {
+                                                          'name' => 'custom_survey_template',
+                                                          'template_id' => '123456789'
+                                                        }
+                                                      })
+
+        patch "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}",
+              params: {
+                csat_survey_enabled: true,
+                csat_config: csat_config_with_template
+              },
+              headers: admin.create_new_auth_token,
+              as: :json
+
+        # Then update without template
+        patch "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}",
+              params: {
+                csat_survey_enabled: true,
+                csat_config: csat_config.merge({ 'message' => 'Updated message' })
+              },
+              headers: admin.create_new_auth_token,
+              as: :json
+
+        expect(response).to have_http_status(:success)
+
+        inbox.reload
+        config = inbox.csat_config
+        expect(config['message']).to eq('Updated message')
+        expect(config['template']).to be_nil # Template should be removed when not provided
       end
     end
   end
@@ -1243,6 +1345,140 @@ RSpec.describe 'Inboxes API', type: :request do
 
         expect(response).to have_http_status(:ok)
         expect(channel.reload.provider_connection).to eq('connection' => 'close')
+      end
+    end
+  end
+
+  describe 'POST /api/v1/accounts/:account_id/inboxes/:id/convert_provider' do
+    let(:channel) { create(:channel_whatsapp, account: account, provider: 'baileys', validate_provider_config: false, sync_templates: false) }
+    let(:inbox) { channel.inbox }
+    let(:new_cloud_config) do
+      { api_key: 'new_cloud_key', phone_number_id: 'new_phone_id', business_account_id: 'new_waba_id' }
+    end
+
+    before do
+      stub_request(:delete, "#{channel.provider_config['provider_url']}/connections/#{channel.phone_number}")
+        .to_return(status: 200)
+      stub_request(:get, %r{graph\.facebook\.com/v\d+\.\d+/.*/message_templates.*})
+        .to_return(status: 200, body: { data: [] }.to_json, headers: { 'Content-Type' => 'application/json' })
+      webhook_setup_service = instance_double(Whatsapp::WebhookSetupService, perform: nil)
+      allow(Whatsapp::WebhookSetupService).to receive(:new).and_return(webhook_setup_service)
+    end
+
+    context 'when unauthenticated' do
+      it 'returns unauthorized' do
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             params: { provider: 'whatsapp_cloud', provider_config: new_cloud_config }
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated as an agent' do
+      it 'returns unauthorized' do
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: agent.create_new_auth_token,
+             params: { provider: 'whatsapp_cloud', provider_config: new_cloud_config },
+             as: :json
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+
+      it 'returns unauthorized even when the agent is assigned to the inbox' do
+        create(:inbox_member, user: agent, inbox: inbox)
+
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: agent.create_new_auth_token,
+             params: { provider: 'whatsapp_cloud', provider_config: new_cloud_config },
+             as: :json
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated as an administrator' do
+      it 'converts the channel to the new provider' do # rubocop:disable RSpec/MultipleExpectations
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: admin.create_new_auth_token,
+             params: { provider: 'whatsapp_cloud', provider_config: new_cloud_config },
+             as: :json
+
+        expect(response).to have_http_status(:ok)
+        body = response.parsed_body
+        expect(body['provider']).to eq('whatsapp_cloud')
+        expect(body['provider_config']).to include(
+          'api_key' => 'new_cloud_key',
+          'phone_number_id' => 'new_phone_id',
+          'business_account_id' => 'new_waba_id'
+        )
+        expect(body['provider_config']).not_to have_key('provider_url')
+        channel.reload
+        expect(channel.provider).to eq('whatsapp_cloud')
+        expect(channel.provider_config).to include(
+          'api_key' => 'new_cloud_key',
+          'phone_number_id' => 'new_phone_id',
+          'business_account_id' => 'new_waba_id'
+        )
+        expect(channel.provider_config).not_to have_key('provider_url')
+        expect(channel.provider_connection).to be_blank
+        expect(channel.message_templates).to be_blank
+      end
+
+      it 'returns 422 when the channel does not support conversion' do
+        other_inbox = create(:inbox, account: account)
+
+        post "/api/v1/accounts/#{account.id}/inboxes/#{other_inbox.id}/convert_provider",
+             headers: admin.create_new_auth_token,
+             params: { provider: 'whatsapp_cloud', provider_config: new_cloud_config },
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response.parsed_body['error']).to match(/does not support provider conversion/i)
+      end
+
+      it 'returns 400 when the provider param is missing' do
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: admin.create_new_auth_token,
+             params: { provider_config: new_cloud_config },
+             as: :json
+
+        expect(response).to have_http_status(:bad_request)
+        expect(response.parsed_body['message']).to match(/provider/i)
+      end
+
+      it 'returns 422 when the new provider config is invalid' do
+        cloud_service = instance_double(Whatsapp::Providers::WhatsappCloudService, validate_provider_config?: false)
+        allow(Whatsapp::Providers::WhatsappCloudService).to receive(:new).and_return(cloud_service)
+
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: admin.create_new_auth_token,
+             params: { provider: 'whatsapp_cloud', provider_config: { api_key: 'bad' } },
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response.parsed_body['message']).to match(/invalid credentials/i)
+      end
+
+      it 'returns 422 with a fallback message when conversion raises a generic error' do
+        allow_any_instance_of(Channel::Whatsapp).to receive(:convert_provider!).and_raise(StandardError, 'boom') # rubocop:disable RSpec/AnyInstance
+
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: admin.create_new_auth_token,
+             params: { provider: 'whatsapp_cloud', provider_config: new_cloud_config },
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response.parsed_body['message']).to match(/provider conversion failed/i)
+      end
+
+      it 'returns 422 when converting to the same provider' do
+        post "/api/v1/accounts/#{account.id}/inboxes/#{inbox.id}/convert_provider",
+             headers: admin.create_new_auth_token,
+             params: { provider: channel.provider, provider_config: {} },
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response.parsed_body['message']).to match(/must be different/i)
       end
     end
   end

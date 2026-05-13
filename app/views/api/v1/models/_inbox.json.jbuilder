@@ -3,6 +3,7 @@ json.avatar_url resource.try(:avatar_url)
 json.channel_id resource.channel_id
 json.name resource.name
 json.channel_type resource.channel_type
+json.account_id resource.account_id
 json.greeting_enabled resource.greeting_enabled
 json.greeting_message resource.greeting_message
 json.working_hours_enabled resource.working_hours_enabled
@@ -60,6 +61,9 @@ end
 json.reauthorization_required resource.channel.try(:reauthorization_required?) if resource.instagram?
 json.instagram_id resource.channel.try(:instagram_id) if resource.instagram?
 
+## Tiktok Attributes
+json.reauthorization_required resource.channel.try(:reauthorization_required?) if resource.tiktok?
+
 ## Twilio Attributes
 json.messaging_service_sid resource.channel.try(:messaging_service_sid)
 json.phone_number resource.channel.try(:phone_number)
@@ -110,12 +114,14 @@ end
 ## API Channel Attributes
 if resource.api?
   json.hmac_token resource.channel.try(:hmac_token) if Current.account_user&.administrator?
+  json.secret resource.channel.try(:secret) if Current.account_user&.administrator?
   json.webhook_url resource.channel.try(:webhook_url)
   json.inbox_identifier resource.channel.try(:identifier)
   json.additional_attributes resource.channel.try(:additional_attributes)
 end
 
 json.provider resource.channel.try(:provider)
+json.allow_group_creation resource.channel.try(:allow_group_creation?) || false
 
 ## Telegram Attributes
 json.bot_name resource.channel.try(:bot_name) if resource.telegram?

@@ -60,7 +60,7 @@ describe Whatsapp::Providers::WhatsappCloudService do
         attachment = message.attachments.new(account_id: message.account_id, file_type: :image)
         attachment.file.attach(io: Rails.root.join('spec/assets/avatar.png').open, filename: 'avatar.png', content_type: 'image/png')
 
-        stub_request(:post, 'https://graph.facebook.com/v13.0/123456789/messages')
+        stub_request(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
           .with(
             body: hash_including({
                                    messaging_product: 'whatsapp',
@@ -79,7 +79,7 @@ describe Whatsapp::Providers::WhatsappCloudService do
 
         # ref: https://github.com/bblimke/webmock/issues/900
         # reason for Webmock::API.hash_including
-        stub_request(:post, 'https://graph.facebook.com/v13.0/123456789/messages')
+        stub_request(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
           .with(
             body: hash_including({
                                    messaging_product: 'whatsapp',
@@ -90,6 +90,83 @@ describe Whatsapp::Providers::WhatsappCloudService do
           )
           .to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
         expect(service.send_message('+123456789', message)).to eq 'message_id'
+      end
+
+      it 'calls message endpoints for audio attachment message' do
+        attachment = message.attachments.new(account_id: message.account_id, file_type: :audio)
+        attachment.file.attach(io: Rails.root.join('spec/assets/sample.mp3').open, filename: 'sample.mp3', content_type: 'audio/mpeg')
+
+        stub_request(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
+          .with(
+            body: hash_including({
+                                   messaging_product: 'whatsapp',
+                                   to: '+123456789',
+                                   type: 'audio',
+                                   audio: WebMock::API.hash_including({ link: anything })
+                                 })
+          )
+          .to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
+        expect(service.send_message('+123456789', message)).to eq 'message_id'
+      end
+
+      it 'does not send voice flag for recorded audio in non-ogg format' do
+        attachment = message.attachments.new(account_id: message.account_id, file_type: :audio, meta: { 'is_recorded_audio' => true })
+        attachment.file.attach(io: Rails.root.join('spec/assets/sample.mp3').open, filename: 'sample.mp3', content_type: 'audio/mpeg')
+
+        stub_request(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
+          .with(
+            body: hash_including({
+                                   messaging_product: 'whatsapp',
+                                   to: '+123456789',
+                                   type: 'audio',
+                                   audio: WebMock::API.hash_including({ link: anything })
+                                 })
+          )
+          .to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
+
+        # Ensure voice flag is NOT present for non-ogg audio
+        expect(service.send_message('+123456789', message)).to eq 'message_id'
+        expect(WebMock).not_to(have_requested(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
+          .with { |req| JSON.parse(req.body).dig('audio', 'voice') })
+      end
+
+      it 'sends voice flag for recorded audio in ogg format' do
+        attachment = message.attachments.new(account_id: message.account_id, file_type: :audio, meta: { 'is_recorded_audio' => true })
+        attachment.file.attach(io: Rails.root.join('spec/assets/sample.ogg').open, filename: 'sample.ogg', content_type: 'audio/ogg')
+
+        stub_request(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
+          .with(
+            body: hash_including({
+                                   messaging_product: 'whatsapp',
+                                   to: '+123456789',
+                                   type: 'audio',
+                                   audio: WebMock::API.hash_including({ link: anything, voice: true })
+                                 })
+          )
+          .to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
+        expect(service.send_message('+123456789', message)).to eq 'message_id'
+      end
+
+      it 'normalizes audio/opus to audio/ogg and sends voice flag for recorded audio' do
+        attachment = message.attachments.new(account_id: message.account_id, file_type: :audio, meta: { 'is_recorded_audio' => true })
+        attachment.file.attach(io: Rails.root.join('spec/assets/sample.ogg').open, filename: 'sample.ogg', content_type: 'audio/ogg')
+        attachment.save!
+        # Simulate Marcel detecting audio/opus (as happens with OGG Opus files in Marcel 1.1.0)
+        attachment.file.blob.update_column(:content_type, 'audio/opus') # rubocop:disable Rails/SkipsModelValidations
+        attachment.file.blob.reload
+
+        stub_request(:post, 'https://graph.facebook.com/v24.0/123456789/messages')
+          .with(
+            body: hash_including({
+                                   messaging_product: 'whatsapp',
+                                   to: '+123456789',
+                                   type: 'audio',
+                                   audio: WebMock::API.hash_including({ link: anything, voice: true })
+                                 })
+          )
+          .to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
+        expect(service.send_message('+123456789', message)).to eq 'message_id'
+        expect(attachment.file.blob.reload.content_type).to eq('audio/ogg')
       end
     end
   end
@@ -309,6 +386,94 @@ describe Whatsapp::Providers::WhatsappCloudService do
 
         expect(message.reload.status).not_to eq('failed')
         expect(message.reload.external_error).to be_nil
+      end
+    end
+  end
+
+  describe 'CSAT template methods' do
+    let(:mock_csat_template_service) { instance_double(Whatsapp::CsatTemplateService) }
+    let(:expected_template_name) { "customer_satisfaction_survey_#{whatsapp_channel.inbox.id}" }
+    let(:template_config) do
+      {
+        name: expected_template_name,
+        language: 'en',
+        category: 'UTILITY'
+      }
+    end
+
+    before do
+      allow(Whatsapp::CsatTemplateService).to receive(:new)
+        .with(whatsapp_channel)
+        .and_return(mock_csat_template_service)
+    end
+
+    describe '#create_csat_template' do
+      it 'delegates to csat_template_service with correct config' do
+        allow(mock_csat_template_service).to receive(:create_template)
+          .with(template_config)
+          .and_return({ success: true, template_id: '123' })
+
+        result = service.create_csat_template(template_config)
+
+        expect(mock_csat_template_service).to have_received(:create_template).with(template_config)
+        expect(result).to eq({ success: true, template_id: '123' })
+      end
+    end
+
+    describe '#delete_csat_template' do
+      it 'delegates to csat_template_service with default template name' do
+        allow(mock_csat_template_service).to receive(:delete_template)
+          .with(expected_template_name)
+          .and_return({ success: true })
+
+        result = service.delete_csat_template
+
+        expect(mock_csat_template_service).to have_received(:delete_template).with(expected_template_name)
+        expect(result).to eq({ success: true })
+      end
+
+      it 'delegates to csat_template_service with custom template name' do
+        custom_template_name = 'custom_csat_template'
+        allow(mock_csat_template_service).to receive(:delete_template)
+          .with(custom_template_name)
+          .and_return({ success: true })
+
+        result = service.delete_csat_template(custom_template_name)
+
+        expect(mock_csat_template_service).to have_received(:delete_template).with(custom_template_name)
+        expect(result).to eq({ success: true })
+      end
+    end
+
+    describe '#get_template_status' do
+      it 'delegates to csat_template_service with template name' do
+        template_name = 'customer_survey_template'
+        expected_response = { success: true, template: { status: 'APPROVED' } }
+        allow(mock_csat_template_service).to receive(:get_template_status)
+          .with(template_name)
+          .and_return(expected_response)
+
+        result = service.get_template_status(template_name)
+
+        expect(mock_csat_template_service).to have_received(:get_template_status).with(template_name)
+        expect(result).to eq(expected_response)
+      end
+    end
+
+    describe 'csat_template_service memoization' do
+      it 'creates and memoizes the csat_template_service instance' do
+        allow(Whatsapp::CsatTemplateService).to receive(:new)
+          .with(whatsapp_channel)
+          .and_return(mock_csat_template_service)
+        allow(mock_csat_template_service).to receive(:get_template_status)
+          .and_return({ success: true })
+
+        # Call multiple methods that use the service
+        service.get_template_status('test1')
+        service.get_template_status('test2')
+
+        # Verify the service was only instantiated once
+        expect(Whatsapp::CsatTemplateService).to have_received(:new).once
       end
     end
   end

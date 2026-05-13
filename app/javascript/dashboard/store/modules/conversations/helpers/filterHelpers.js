@@ -64,6 +64,7 @@ const getValueFromConversation = (conversation, attributeKey) => {
   switch (attributeKey) {
     case 'status':
     case 'priority':
+    case 'group_type':
     case 'labels':
     case 'created_at':
     case 'last_activity_at':
@@ -78,7 +79,6 @@ const getValueFromConversation = (conversation, attributeKey) => {
     case 'team_id':
       return conversation.meta?.team?.id;
     case 'browser_language':
-    case 'country_code':
     case 'referer':
       return conversation.additional_attributes?.[attributeKey];
     default:

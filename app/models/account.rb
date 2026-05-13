@@ -28,20 +28,9 @@ class Account < ApplicationRecord
   include Reportable
   include Featurable
   include CacheKeys
-
-  SETTINGS_PARAMS_SCHEMA = {
-    'type': 'object',
-    'properties':
-      {
-        'auto_resolve_after': { 'type': %w[integer null], 'minimum': 10, 'maximum': 1_439_856 },
-        'auto_resolve_message': { 'type': %w[string null] },
-        'auto_resolve_ignore_waiting': { 'type': %w[boolean null] },
-        'audio_transcriptions': { 'type': %w[boolean null] },
-        'auto_resolve_label': { 'type': %w[string null] }
-      },
-    'required': [],
-    'additionalProperties': true
-  }.to_json.freeze
+  include CaptainFeaturable
+  include AccountEmailRateLimitable
+  include AccountSettingsSchema
 
   DEFAULT_QUERY_SETTING = {
     flag_query_mode: :bit_operator,
@@ -53,9 +42,28 @@ class Account < ApplicationRecord
   validates_with JsonSchemaValidator,
                  schema: SETTINGS_PARAMS_SCHEMA,
                  attribute_resolver: ->(record) { record.settings }
+  validate :validate_reporting_timezone
+  validate :validate_support_email_format, if: :will_save_change_to_support_email?
 
   store_accessor :settings, :auto_resolve_after, :auto_resolve_message, :auto_resolve_ignore_waiting
+
   store_accessor :settings, :audio_transcriptions, :auto_resolve_label
+  store_accessor :settings, :captain_models, :captain_features
+  store_accessor :settings, :reporting_timezone
+  store_accessor :settings, :keep_pending_on_bot_failure
+  store_accessor :settings, :captain_auto_resolve_mode
+  store_accessor :settings, :hide_agent_unassigned_tab, :hide_agent_all_tab
+  before_validation :enforce_agent_assignee_tabs_constraint
+
+  def hide_agent_unassigned_tab=(value)
+    super(ActiveModel::Type::Boolean.new.cast(value))
+  end
+
+  def hide_agent_all_tab=(value)
+    super(ActiveModel::Type::Boolean.new.cast(value))
+  end
+
+  include AccountCaptainAutoResolve
 
   has_many :account_users, dependent: :destroy_async
   has_many :agent_bot_inboxes, dependent: :destroy_async
@@ -78,8 +86,11 @@ class Account < ApplicationRecord
   has_many :email_channels, dependent: :destroy_async, class_name: '::Channel::Email'
   has_many :facebook_pages, dependent: :destroy_async, class_name: '::Channel::FacebookPage'
   has_many :instagram_channels, dependent: :destroy_async, class_name: '::Channel::Instagram'
+  has_many :tiktok_channels, dependent: :destroy_async, class_name: '::Channel::Tiktok'
   has_many :hooks, dependent: :destroy_async, class_name: 'Integrations::Hook'
   has_many :inboxes, dependent: :destroy_async
+  has_many :internal_chat_categories, class_name: 'InternalChat::Category', dependent: :destroy_async
+  has_many :internal_chat_channels, class_name: 'InternalChat::Channel', dependent: :destroy_async
   has_many :labels, dependent: :destroy_async
   has_many :line_channels, dependent: :destroy_async, class_name: '::Channel::Line'
   has_many :mentions, dependent: :destroy_async
@@ -88,6 +99,8 @@ class Account < ApplicationRecord
   has_many :notification_settings, dependent: :destroy_async
   has_many :notifications, dependent: :destroy_async
   has_many :portals, dependent: :destroy_async, class_name: '::Portal'
+  has_many :scheduled_messages, dependent: :destroy_async
+  has_many :recurring_scheduled_messages, dependent: :destroy_async
   has_many :sms_channels, dependent: :destroy_async, class_name: '::Channel::Sms'
   has_many :teams, dependent: :destroy_async
   has_many :telegram_channels, dependent: :destroy_async, class_name: '::Channel::Telegram'
@@ -108,6 +121,7 @@ class Account < ApplicationRecord
 
   before_validation :validate_limit_keys
   after_create_commit :notify_creation
+  after_create_commit :setup_internal_chat
   after_destroy :remove_account_sequences
 
   def agents
@@ -165,6 +179,10 @@ class Account < ApplicationRecord
     Rails.configuration.dispatcher.dispatch(ACCOUNT_CREATED, Time.zone.now, account: self)
   end
 
+  def setup_internal_chat
+    InternalChat::DefaultChannelSetupService.new(account: self).perform
+  end
+
   trigger.after(:insert).for_each(:row) do
     "execute format('create sequence IF NOT EXISTS conv_dpid_seq_%s', NEW.id);"
   end
@@ -175,6 +193,26 @@ class Account < ApplicationRecord
 
   def validate_limit_keys
     # method overridden in enterprise module
+  end
+
+  def validate_reporting_timezone
+    return if reporting_timezone.blank? || ActiveSupport::TimeZone[reporting_timezone].present?
+
+    errors.add(:reporting_timezone, I18n.t('errors.account.reporting_timezone.invalid'))
+  end
+
+  def enforce_agent_assignee_tabs_constraint
+    self.hide_agent_all_tab = true if hide_agent_unassigned_tab
+  end
+
+  def validate_support_email_format
+    value = attributes['support_email']
+    return if value.blank?
+
+    parsed = Mail::Address.new(value).address
+    errors.add(:support_email, I18n.t('errors.account.support_email.invalid')) if parsed.blank?
+  rescue Mail::Field::ParseError, Mail::Field::IncompleteParseError
+    errors.add(:support_email, I18n.t('errors.account.support_email.invalid'))
   end
 
   def remove_account_sequences

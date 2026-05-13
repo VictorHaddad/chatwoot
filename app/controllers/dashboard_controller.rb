@@ -10,13 +10,14 @@ class DashboardController < ActionController::Base
     TERMS_URL
     BRAND_URL
     BRAND_NAME
+    BRAND_COLOR
     PRIVACY_URL
     DISPLAY_MANIFEST
     CREATE_NEW_ACCOUNT_FROM_DASHBOARD
     CHATWOOT_INBOX_TOKEN
     API_CHANNEL_NAME
     API_CHANNEL_THUMBNAIL
-    ANALYTICS_TOKEN
+    CLOUD_ANALYTICS_TOKEN
     DIRECT_UPLOADS_ENABLED
     MAXIMUM_FILE_UPLOAD_SIZE
     HCAPTCHA_SITE_KEY
@@ -73,10 +74,12 @@ class DashboardController < ActionController::Base
       ENABLE_ACCOUNT_SIGNUP: GlobalConfigService.load('ENABLE_ACCOUNT_SIGNUP', 'false'),
       FB_APP_ID: GlobalConfigService.load('FB_APP_ID', ''),
       INSTAGRAM_APP_ID: GlobalConfigService.load('INSTAGRAM_APP_ID', ''),
+      TIKTOK_APP_ID: GlobalConfigService.load('TIKTOK_APP_ID', ''),
       FACEBOOK_API_VERSION: GlobalConfigService.load('FACEBOOK_API_VERSION', 'v18.0'),
       WHATSAPP_APP_ID: GlobalConfigService.load('WHATSAPP_APP_ID', ''),
       WHATSAPP_CONFIGURATION_ID: GlobalConfigService.load('WHATSAPP_CONFIGURATION_ID', ''),
       IS_ENTERPRISE: ChatwootApp.enterprise?,
+      BAILEYS_WHATSAPP_GROUPS_ENABLED: Whatsapp::Providers::WhatsappBaileysService.groups_enabled?,
       AZURE_APP_ID: GlobalConfigService.load('AZURE_APP_ID', ''),
       GIT_SHA: GIT_HASH,
       ALLOWED_LOGIN_METHODS: allowed_login_methods

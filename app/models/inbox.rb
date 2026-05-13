@@ -64,9 +64,12 @@ class Inbox < ApplicationRecord
   has_many :contacts, through: :contact_inboxes
 
   has_many :inbox_members, dependent: :destroy_async
+  has_many :inbox_signatures, dependent: :destroy_async
   has_many :members, through: :inbox_members, source: :user
   has_many :conversations, dependent: :destroy_async
   has_many :messages, dependent: :destroy_async
+  has_many :scheduled_messages, dependent: :destroy_async
+  has_many :recurring_scheduled_messages, dependent: :destroy_async
 
   has_one :inbox_assignment_policy, dependent: :destroy
   has_one :assignment_policy, through: :inbox_assignment_policy
@@ -126,6 +129,10 @@ class Inbox < ApplicationRecord
     channel_type == 'Channel::Instagram'
   end
 
+  def tiktok?
+    channel_type == 'Channel::Tiktok'
+  end
+
   def web_widget?
     channel_type == 'Channel::WebWidget'
   end
@@ -152,6 +159,10 @@ class Inbox < ApplicationRecord
 
   def whatsapp?
     channel_type == 'Channel::Whatsapp'
+  end
+
+  def twilio_whatsapp?
+    channel_type == 'Channel::TwilioSms' && channel.medium == 'whatsapp'
   end
 
   def assignable_agents

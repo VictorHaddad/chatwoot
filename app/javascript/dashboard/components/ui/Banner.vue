@@ -42,6 +42,10 @@ export default {
       type: Boolean,
       default: false,
     },
+    noticeMessage: {
+      type: String,
+      default: '',
+    },
   },
   emits: ['primaryAction', 'close'],
   computed: {
@@ -79,7 +83,7 @@ export default {
 
 <template>
   <div
-    class="flex items-center justify-center h-12 gap-4 px-4 py-3 text-xs text-white banner dark:text-white woot-banner"
+    class="flex items-center justify-center min-h-12 gap-4 px-4 py-3 text-xs text-white banner dark:text-white woot-banner"
     :class="bannerClasses"
   >
     <span class="banner-message">
@@ -92,6 +96,9 @@ export default {
       >
         {{ hrefLinkText }}
       </a>
+      <span v-if="noticeMessage" class="banner-notice">
+        {{ noticeMessage }}
+      </span>
     </span>
     <div class="actions">
       <NextButton
@@ -152,7 +159,11 @@ export default {
   }
 
   .banner-message {
-    @apply flex items-center;
+    @apply inline;
+  }
+
+  .banner-notice {
+    @apply ml-2 italic opacity-70;
   }
 
   .actions {

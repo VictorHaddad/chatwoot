@@ -14,7 +14,6 @@ import bulkActions from './modules/bulkActions';
 import campaigns from './modules/campaigns';
 import cannedResponse from './modules/cannedResponse';
 import categories from './modules/helpCenterCategories';
-import companies from './modules/companies';
 import contactConversations from './modules/contactConversations';
 import contactLabels from './modules/contactLabels';
 import contactNotes from './modules/contactNotes';
@@ -33,6 +32,7 @@ import customViews from './modules/customViews';
 import dashboardApps from './modules/dashboardApps';
 import draftMessages from './modules/draftMessages';
 import globalConfig from 'shared/store/globalConfig';
+import groupMembers from './modules/groupMembers';
 import inboxAssignableAgents from './modules/inboxAssignableAgents';
 import inboxes from './modules/inboxes';
 import inboxMembers from './modules/inboxMembers';
@@ -42,6 +42,8 @@ import macros from './modules/macros';
 import notifications from './modules/notifications';
 import portals from './modules/helpCenterPortals';
 import reports from './modules/reports';
+import recurringScheduledMessages from './modules/recurringScheduledMessages';
+import scheduledMessages from './modules/scheduledMessages';
 import sla from './modules/sla';
 import slaReports from './modules/SLAReports';
 import summaryReports from './modules/summaryReports';
@@ -59,6 +61,8 @@ import copilotMessages from './captain/copilotMessages';
 import captainScenarios from './captain/scenarios';
 import captainTools from './captain/tools';
 import captainCustomTools from './captain/customTools';
+import internalChat from './modules/internalChat';
+import internalChatTypingStatus from './modules/internalChat/typingStatus';
 
 const plugins = [];
 
@@ -78,7 +82,6 @@ export default createStore({
     campaigns,
     cannedResponse,
     categories,
-    companies,
     contactConversations,
     contactLabels,
     contactNotes,
@@ -97,6 +100,7 @@ export default createStore({
     dashboardApps,
     draftMessages,
     globalConfig,
+    groupMembers,
     inboxAssignableAgents,
     inboxes,
     inboxMembers,
@@ -106,6 +110,8 @@ export default createStore({
     notifications,
     portals,
     reports,
+    recurringScheduledMessages,
+    scheduledMessages,
     sla,
     slaReports,
     summaryReports,
@@ -123,6 +129,8 @@ export default createStore({
     captainScenarios,
     captainTools,
     captainCustomTools,
+    internalChat,
+    internalChatTypingStatus,
   },
   plugins,
 });
