@@ -28,13 +28,18 @@ module Enterprise::WebsiteBrandingService
       headers: {
         'Authorization' => "Bearer #{context_dev_api_key}",
         'Content-Type' => 'application/json'
-      }
+      },
+      timeout: 10,
+      max_retries: 0
     )
   end
 
   def process_response(response)
     @http_status = response.code
-    raise "API Error: #{response.message} (Status: #{response.code})" unless response.success?
+    unless response.success?
+      Rails.logger.warn "[WebsiteBranding] Context.dev returned #{response.code}: #{response.parsed_response}"
+      return nil
+    end
 
     brand = response.parsed_response&.dig('brand')
     return nil if brand.blank?
@@ -55,6 +60,7 @@ module Enterprise::WebsiteBrandingService
       socials: brand['socials'] || [],
       links: brand['links'],
       email: @email,
+      email_provider: detect_email_provider,
       industries: brand.dig('industries', 'eic') || [],
       stock: brand['stock'],
       is_nsfw: brand['is_nsfw'] || false

@@ -2,6 +2,9 @@
 import { computed } from 'vue';
 
 import MessageMeta from '../MessageMeta.vue';
+import ReferralCard from './ReferralCard.vue';
+import CaptainGenerationDetails from '../CaptainGenerationDetails.vue';
+import TranslationToggle from '../TranslationToggle.vue';
 
 import { emitter } from 'shared/helpers/mitt';
 import { useMessageContext } from '../provider.js';
@@ -20,9 +23,32 @@ const {
   orientation,
   inReplyTo,
   shouldGroupWithNext,
+  id,
   additionalAttributes,
+  contentAttributes,
+  isCaptainMessage,
+  showingOriginal,
 } = useMessageContext();
 const { t } = useI18n();
+
+// Click-to-WhatsApp ad metadata attached to the first message after an ad click.
+const referral = computed(() => contentAttributes.value?.referral);
+
+// The contact deleted/revoked this message on WhatsApp. We keep the content
+// readable but mute the bubble and add a dashed border to signal the deletion.
+const deletedByContact = computed(
+  () => contentAttributes.value?.deletedByContact === true
+);
+
+const metaColorClass = computed(() =>
+  variant.value === MESSAGE_VARIANTS.PRIVATE
+    ? 'text-n-amber-12/50'
+    : 'text-n-slate-11'
+);
+
+const emailMetaClass = computed(() =>
+  variant.value === MESSAGE_VARIANTS.EMAIL ? 'px-3 pb-3' : ''
+);
 
 const varaintBaseMap = {
   [MESSAGE_VARIANTS.AGENT]: 'bg-n-solid-blue text-n-slate-12',
@@ -79,6 +105,10 @@ const messageClass = computed(() => {
     classToApply.push(scheduledMessageClass.value);
   }
 
+  if (deletedByContact.value) {
+    classToApply.push('border-2 border-dashed border-n-slate-7 opacity-75');
+  }
+
   return classToApply;
 });
 
@@ -114,7 +144,7 @@ const replyToPreview = computed(() => {
 
 <template>
   <div
-    class="text-sm"
+    class="text-sm min-w-0"
     :class="[
       messageClass,
       {
@@ -122,6 +152,7 @@ const replyToPreview = computed(() => {
       },
     ]"
   >
+    <ReferralCard v-if="referral" :referral="referral" />
     <div
       v-if="inReplyTo"
       class="p-2 -mx-1 mb-2 rounded-lg cursor-pointer bg-n-alpha-black1"
@@ -133,16 +164,29 @@ const replyToPreview = computed(() => {
       />
     </div>
     <slot />
-    <MessageMeta
-      v-if="shouldShowMeta"
-      :class="[
-        flexOrientationClass,
-        variant === MESSAGE_VARIANTS.EMAIL ? 'px-3 pb-3' : '',
-        variant === MESSAGE_VARIANTS.PRIVATE
-          ? 'text-n-amber-12/50'
-          : 'text-n-slate-11',
-      ]"
-      class="mt-2"
-    />
+    <template v-if="shouldShowMeta">
+      <CaptainGenerationDetails
+        v-if="isCaptainMessage"
+        :message-id="id"
+        class="mt-2"
+      >
+        <TranslationToggle
+          :icon="false"
+          :showing-original="showingOriginal"
+          @toggle="showingOriginal = !showingOriginal"
+        />
+        <template #meta>
+          <MessageMeta
+            class="shrink-0 whitespace-nowrap"
+            :class="[emailMetaClass, metaColorClass]"
+          />
+        </template>
+      </CaptainGenerationDetails>
+      <MessageMeta
+        v-else
+        :class="[flexOrientationClass, emailMetaClass, metaColorClass]"
+        class="mt-2"
+      />
+    </template>
   </div>
 </template>

@@ -19,7 +19,7 @@ class SamlUserBuilder
     user = User.from_email(auth_attribute('email'))
 
     return create_user unless user
-    return existing_user_for_account(user) if user_belongs_to_account?(user)
+    return existing_user_for_account(user) if user_belongs_to_account?(user) && !user_has_additional_accounts?(user)
 
     raise AuthenticationFailed, I18n.t('auth.saml.authentication_failed')
   end
@@ -32,6 +32,10 @@ class SamlUserBuilder
 
   def user_belongs_to_account?(user)
     user.account_users.exists?(account_id: @account_id)
+  end
+
+  def user_has_additional_accounts?(user)
+    user.account_users.where.not(account_id: @account_id).exists?
   end
 
   def confirm_user_if_required(user)
@@ -60,6 +64,14 @@ class SamlUserBuilder
       password: SecureRandom.hex(32),
       confirmed_at: Time.current
     )
+  # The only attributes here that come from the assertion are the email and the name, so a
+  # record Rails refuses is the IdP sending something unusable -- a failed sign-in, which is
+  # what `AuthenticationFailed` already means. Deliberately narrow: `add_user_to_account`
+  # and the two existing-user updates raise the same class for reasons that are ours (a
+  # missing custom role, a callback, a user row that was already invalid), and those must
+  # keep failing loudly instead of being answered with a login error.
+  rescue ActiveRecord::RecordInvalid
+    raise AuthenticationFailed, I18n.t('auth.saml.authentication_failed')
   end
 
   def add_user_to_account
@@ -85,7 +97,7 @@ class SamlUserBuilder
 
     if matching_mapping['role']
       account_user.update!(role: matching_mapping['role'])
-    elsif matching_mapping['custom_role_id']
+    elsif matching_mapping['custom_role_id'] && account.feature_enabled?('custom_roles')
       account_user.update!(custom_role_id: matching_mapping['custom_role_id'])
     end
   end

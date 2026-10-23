@@ -1,0 +1,42 @@
+{
+  "EDIT_CONTACT": {
+    "CONFIRM_DISCARD": {
+      "TITLE": "¿Descartar los cambios?",
+      "MESSAGE": "Tiene cambios sin guardar. ¿Seguro que desea descartarlos?",
+      "YES": "Descartar",
+      "NO": "Seguir editando"
+    }
+  },
+  "CONTACTS_LAYOUT": {
+    "HEADER": {
+      "ACTIONS": {
+        "FILTERS": {
+          "CREATE_SEGMENT": {
+            "VISIBILITY": {
+              "LABEL": "Visibilidad",
+              "GLOBAL": {
+                "LABEL": "Público",
+                "DESCRIPTION": "Disponible para todos los agentes de esta cuenta."
+              },
+              "PERSONAL": {
+                "LABEL": "Privado",
+                "DESCRIPTION": "Solo usted podrá ver y gestionar este segmento."
+              }
+            },
+            "READ_ONLY_TOOLTIP": "Segmento público. Pida a un administrador que lo edite o lo elimine."
+          }
+        }
+      }
+    }
+  },
+  "COMPOSE_NEW_CONVERSATION": {
+    "TAB_CONVERSATION": "Conversación",
+    "TAB_GROUP": "Grupo",
+    "FORM": {
+      "WHATSAPP_NUMBER_MISSING": "Este número no tiene WhatsApp. Los mensajes no serán entregados."
+    }
+  },
+  "CONTACT_PANEL": {
+    "OPEN_IN_AGENTS": "Abrir en fazer.ai agents"
+  }
+}

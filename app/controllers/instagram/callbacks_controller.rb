@@ -11,6 +11,8 @@ class Instagram::CallbacksController < ApplicationController
     end
 
     process_successful_authorization
+  rescue CustomExceptions::Inbox::LimitExceeded => e
+    handle_limit_error(e)
   rescue StandardError => e
     handle_error(e)
   end
@@ -28,6 +30,8 @@ class Instagram::CallbacksController < ApplicationController
     @long_lived_token_response = exchange_for_long_lived_token(@response.token)
     inbox, already_exists = find_or_create_inbox
 
+    return redirect_to app_onboarding_inbox_setup_url(account_id: account_id) if return_to == 'onboarding'
+
     if already_exists
       redirect_to app_instagram_inbox_settings_url(account_id: account_id, inbox_id: inbox.id)
     else
@@ -43,6 +47,14 @@ class Instagram::CallbacksController < ApplicationController
 
     error_info = extract_error_info(error)
     redirect_to_error_page(error_info)
+  end
+
+  def handle_limit_error(error)
+    redirect_to_error_page(
+      'error_type' => error.class.name,
+      'code' => Rack::Utils.status_code(error.http_status),
+      'error_message' => error.message
+    )
   end
 
   # Extract error details from the exception
@@ -94,13 +106,21 @@ class Instagram::CallbacksController < ApplicationController
 
     if channel_instagram
       update_channel(channel_instagram, user_details)
+      # A reconnection used to replace the credentials and stop there, so an inbox that was
+      # reconnected precisely because it had stopped receiving went on not receiving: the
+      # subscription is what had failed, and nothing here asked for it again.
+      subscribed = channel_instagram.subscribe
     else
       channel_instagram = create_channel_with_inbox(user_details)
+      # A new channel subscribes through `after_create_commit`, and the only mark it leaves
+      # when that fails is the flag below.
+      subscribed = !channel_instagram.reauthorization_required?
     end
 
-    # reauthorize channel, this code path only triggers when instagram auth is successful
-    # reauthorized will also update cache keys for the associated inbox
-    channel_instagram.reauthorized!
+    # Only when the channel can actually receive. Authorizing and being subscribed are two
+    # different things, and clearing the flag on the strength of the first would hide
+    # exactly what the flag exists to show: this is the one place that clears it.
+    channel_instagram.reauthorized! if subscribed
 
     [channel_instagram.inbox, channel_exists]
   end
@@ -114,11 +134,10 @@ class Instagram::CallbacksController < ApplicationController
 
     channel_instagram.update!(
       access_token: @long_lived_token_response['access_token'],
-      expires_at: expires_at
+      expires_at: expires_at,
+      provider_name: user_details['username']
     )
 
-    # Update inbox name if username changed
-    channel_instagram.inbox.update!(name: user_details['username'])
     channel_instagram
   end
 
@@ -130,7 +149,8 @@ class Instagram::CallbacksController < ApplicationController
         access_token: @long_lived_token_response['access_token'],
         instagram_id: user_details['user_id'].to_s,
         account: account,
-        expires_at: expires_at
+        expires_at: expires_at,
+        provider_name: user_details['username']
       )
 
       account.inboxes.create!(
@@ -147,6 +167,10 @@ class Instagram::CallbacksController < ApplicationController
     return unless params[:state]
 
     verify_instagram_token(params[:state])
+  end
+
+  def return_to
+    instagram_token_return_to(params[:state])
   end
 
   def oauth_code

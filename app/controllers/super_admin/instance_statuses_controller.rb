@@ -21,7 +21,9 @@ class SuperAdmin::InstanceStatusesController < SuperAdmin::ApplicationController
   end
 
   def instance_meta
-    @metrics['Database Migrations'] = ActiveRecord::Base.connection.migration_context.needs_migration? ? 'pending' : 'completed'
+    migrations_paths = ActiveRecord::Migrator.migrations_paths
+    migrations_context = ActiveRecord::MigrationContext.new(migrations_paths)
+    @metrics['Database Migrations'] = migrations_context.needs_migration? ? 'pending' : 'completed'
   end
 
   def chatwoot_version
@@ -60,7 +62,7 @@ class SuperAdmin::InstanceStatusesController < SuperAdmin::ApplicationController
 
   def baileys_api_version
     @metrics['Baileys API version'] = Whatsapp::Providers::WhatsappBaileysService.status[:packageInfo][:version]
-  rescue Whatsapp::Providers::WhatsappBaileysService::ProviderUnavailableError => e
+  rescue Whatsapp::Session::Errors::ProviderUnavailable => e
     @metrics['Baileys API version'] = e.message
   end
 end

@@ -38,6 +38,30 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
               })
   end
 
+  def inbox_provider_connection_updated(event)
+    inbox = event.data[:inbox]
+    account = inbox.account
+    provider_connection = event.data[:provider_connection] || {}
+
+    # QR code / error are admin-only (mirrors Channel::Whatsapp#provider_connection_data):
+    # the QR grants full access to the WhatsApp account, so it must not reach agents.
+    # Agents and admins receive different payloads (admins also get qr_data_url/error,
+    # which grant full WhatsApp account access), so the two recipient lists are built
+    # separately. Querying each role directly also avoids `user_tokens` re-querying
+    # administrators. The roles are disjoint, so the lists never overlap.
+    admin_tokens = account.administrators.pluck(:pubsub_token)
+    agent_tokens = account.agents.pluck(:pubsub_token)
+
+    # The agent half is shared with the REST payload, and it is the whole hash a connection
+    # update replaces on the frontend: a key left out here drops its banner until reload.
+    connection = inbox.channel.provider_connection_agent_data(provider_connection)
+    broadcast(account, agent_tokens, INBOX_PROVIDER_CONNECTION_UPDATED, { inbox_id: inbox.id, provider_connection: connection })
+    broadcast(account, admin_tokens, INBOX_PROVIDER_CONNECTION_UPDATED, {
+                inbox_id: inbox.id,
+                provider_connection: connection.merge(inbox.channel.provider_connection_admin_data(provider_connection))
+              })
+  end
+
   def message_created(event)
     message, account = extract_message_and_account(event)
     conversation = message.conversation
@@ -112,33 +136,48 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
 
   def conversation_created(event)
     conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members) + contact_inbox_tokens(conversation.contact_inbox)
+    # Built once and shared: `push_event_data` is several queries deep, and the
+    # contact's copy is a subset of the agents', never a fresher read.
+    payload = conversation.push_event_data
 
-    broadcast(account, tokens, CONVERSATION_CREATED, conversation.push_event_data)
+    broadcast(account, user_tokens(account, conversation.inbox.members), CONVERSATION_CREATED, payload)
+    broadcast_to_contact(account, conversation, CONVERSATION_CREATED, payload)
+  end
+
+  def conversation_bot_handoff(event)
+    broadcast_to_inbox_members(event, CONVERSATION_BOT_HANDOFF)
   end
 
   def conversation_read(event)
-    conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members)
-
-    broadcast(account, tokens, CONVERSATION_READ, conversation.push_event_data)
+    broadcast_to_inbox_members(event, CONVERSATION_READ)
   end
 
   def conversation_status_changed(event)
     conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members) + contact_inbox_tokens(conversation.contact_inbox)
+    payload = conversation.push_event_data
 
-    broadcast(account, tokens, CONVERSATION_STATUS_CHANGED, conversation.push_event_data)
+    broadcast(account, user_tokens(account, conversation.inbox.members), CONVERSATION_STATUS_CHANGED, payload)
+    broadcast_to_contact(account, conversation, CONVERSATION_STATUS_CHANGED, payload)
   end
 
   def conversation_updated(event)
     conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members) + contact_inbox_tokens(conversation.contact_inbox)
 
     payload = conversation.push_event_data
     metadata = event.data[:broadcast_metadata]
     payload = payload.merge(event_metadata: metadata) if metadata.present?
-    broadcast(account, tokens, CONVERSATION_UPDATED, payload)
+
+    broadcast(account, user_tokens(account, conversation.inbox.members), CONVERSATION_UPDATED, payload)
+    broadcast_to_contact(account, conversation, CONVERSATION_UPDATED, payload)
+  end
+
+  def conversation_unread_count_changed(event)
+    account, inbox_members = ::Conversations::UnreadCounts::BroadcastScope.new(event).perform
+    return if account.blank? || !account.feature_enabled?('conversation_unread_counts')
+
+    tokens = user_tokens(account, inbox_members)
+
+    broadcast(account, tokens, CONVERSATION_UNREAD_COUNT_CHANGED, {})
   end
 
   def conversation_typing_on(event)
@@ -151,9 +190,9 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
       account,
       tokens,
       CONVERSATION_TYPING_ON,
-      conversation: conversation.push_event_data,
-      user: user.push_event_data,
-      is_private: event.data[:is_private] || false
+      { conversation: typing_conversation_data(conversation),
+        user: user.push_event_data,
+        is_private: event.data[:is_private] || false }
     )
   end
 
@@ -167,9 +206,9 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
       account,
       tokens,
       CONVERSATION_RECORDING,
-      conversation: conversation.push_event_data,
-      user: user.push_event_data,
-      is_private: event.data[:is_private] || false
+      { conversation: typing_conversation_data(conversation),
+        user: user.push_event_data,
+        is_private: event.data[:is_private] || false }
     )
   end
 
@@ -183,31 +222,27 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
       account,
       tokens,
       CONVERSATION_TYPING_OFF,
-      conversation: conversation.push_event_data,
-      user: user.push_event_data,
-      is_private: event.data[:is_private] || false
+      { conversation: typing_conversation_data(conversation),
+        user: user.push_event_data,
+        is_private: event.data[:is_private] || false }
     )
   end
 
   def assignee_changed(event)
-    conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members)
-
-    broadcast(account, tokens, ASSIGNEE_CHANGED, conversation.push_event_data)
+    # Model callbacks identify automatic assignment (auto-assignment or automation
+    # rules) by performed_by. The V2 AssignmentService also dispatches an event with
+    # user (the assigned agent, NOT the performer). Neither requires inferring
+    # automation from a missing Current.user.
+    automatic_assignment = [Inbox, AssignmentPolicy, AutomationRule].include?(event.data[:performed_by].class) || event.data[:user].present?
+    broadcast_to_inbox_members(event, ASSIGNEE_CHANGED, automatic_assignment: automatic_assignment)
   end
 
   def team_changed(event)
-    conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members)
-
-    broadcast(account, tokens, TEAM_CHANGED, conversation.push_event_data)
+    broadcast_to_inbox_members(event, TEAM_CHANGED)
   end
 
   def conversation_contact_changed(event)
-    conversation, account = extract_conversation_and_account(event)
-    tokens = user_tokens(account, conversation.inbox.members)
-
-    broadcast(account, tokens, CONVERSATION_CONTACT_CHANGED, conversation.push_event_data)
+    broadcast_to_inbox_members(event, CONVERSATION_CONTACT_CHANGED)
   end
 
   def contact_created(event)
@@ -235,11 +270,22 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
 
   def contact_group_synced(event)
     contact, account = extract_contact_and_account(event)
-    inbox_phone = contact.group_channel&.phone_number
+    # The inbox the sync actually ran as. `Contact#group_channel` is the group contact's
+    # first contact inbox, which is an arbitrary pick as soon as the same group is in two
+    # inboxes of one account: it would answer "you administer this group" for a number
+    # that is not the one the agent has open. Kept as the fallback for an event queued by
+    # a version that did not name it.
+    channel = event.data[:channel] || contact.group_channel
+    # The same answer the REST roster sends, from the same lookup. Two copies of it is how
+    # an account known by LID alone was recognised by whichever ran last: the fetch said
+    # "you administer this group" and the first sync event took it back.
+    own_member = Whatsapp::Session::Owner.group_member(channel, contact)
     payload = contact.push_event_data.merge(
       group_members: group_members_data(contact, account),
-      inbox_phone_number: inbox_phone,
-      is_inbox_admin: inbox_admin_in_group?(contact, inbox_phone)
+      inbox_id: channel&.inbox&.id,
+      inbox_phone_number: channel&.phone_number,
+      own_member_id: own_member&.id,
+      is_inbox_admin: own_member&.role == 'admin'
     )
 
     broadcast(account, [account_token(account)], CONTACT_GROUP_SYNCED, payload)
@@ -252,10 +298,63 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
     broadcast(account, [user.pubsub_token], CONVERSATION_MENTIONED, conversation.push_event_data)
   end
 
+  def conversation_pinned(event)
+    broadcast_conversation_pin(event, CONVERSATION_PINNED)
+  end
+
+  def conversation_unpinned(event)
+    broadcast_conversation_pin(event, CONVERSATION_UNPINNED)
+  end
+
   private
+
+  def broadcast_to_inbox_members(event, event_name, **metadata)
+    conversation, account = extract_conversation_and_account(event)
+
+    broadcast(account, user_tokens(account, conversation.inbox.members), event_name, conversation.push_event_data.merge(metadata))
+  end
+
+  # Pins are personal, so the event only reaches the sessions of the agent who pinned the conversation.
+  def broadcast_conversation_pin(event, event_name)
+    pin_data = event.data[:conversation_pin]
+
+    user = User.find_by(id: pin_data[:user_id])
+    account = Account.find_by(id: pin_data[:account_id])
+    return if user.blank? || account.blank?
+
+    broadcast(account, [user.pubsub_token], event_name, {
+                conversation_id: pin_data[:conversation_id],
+                pinned_at: pin_data[:pinned_at]
+              })
+  end
 
   def account_token(account)
     "account_#{account.id}"
+  end
+
+  # The contact subscribes to the same conversation events as the agents, but
+  # `push_event_data` is an agent payload. It gets its own broadcast built from
+  # the contact allowlist instead of riding along on the agents' hash.
+  # `payload` is passed in rather than re-derived so per-event extras the caller
+  # merged in (eg. `event_metadata`) survive the narrowing.
+  # ActionCableBroadcastJob preserves the shape it is handed; without that, the
+  # refresh would rebuild the full agent payload and undo this.
+  def broadcast_to_contact(account, conversation, event_name, payload)
+    # `performer` is skipped rather than allowlisted: it is merged in below,
+    # after the narrowing, and carries the acting agent's name and availability
+    # status. The widget never reads it. Typing events keep it — they already
+    # send `user` on purpose so the widget can render "agent is typing".
+    broadcast(account, contact_inbox_tokens(conversation.contact_inbox), event_name,
+              Conversations::EventDataPresenter.contact_slice(payload), include_performer: false)
+  end
+
+  # Typing events reach agents and the contact in a single payload, and no
+  # subscriber reads more than the conversation id here — the dashboard handlers
+  # key their timers off `conversation.id` and nothing else. So this ships the
+  # contact-sized payload to everyone rather than doubling the jobs on a
+  # per-keystroke path.
+  def typing_conversation_data(conversation)
+    conversation.contact_push_event_data
   end
 
   def typing_event_listener_tokens(account, conversation, user)
@@ -299,24 +398,13 @@ class ActionCableListener < BaseListener # rubocop:disable Metrics/ClassLength
     end
   end
 
-  def inbox_admin_in_group?(contact, inbox_phone)
-    return false if inbox_phone.blank?
-
-    clean = inbox_phone.delete('+')
-    GroupMember.active
-               .where(group_contact: contact, role: :admin)
-               .joins(:contact)
-               .exists?(['REPLACE(contacts.phone_number, \'+\', \'\') = ? OR RIGHT(REPLACE(contacts.phone_number, \'+\', \'\'), 8) = RIGHT(?, 8)',
-                         clean, clean])
-  end
-
-  def broadcast(account, tokens, event_name, data)
+  def broadcast(account, tokens, event_name, data, include_performer: true)
     return if tokens.blank?
 
     payload = data.merge(account_id: account.id)
     # So the frondend knows who performed the action.
     # Useful in cases like conversation assignment for generating a notification with assigner name.
-    payload[:performer] = Current.user&.push_event_data if Current.user.present?
+    payload[:performer] = Current.user&.push_event_data if include_performer && Current.user.present?
 
     ::ActionCableBroadcastJob.perform_later(tokens.uniq, event_name, payload)
   end

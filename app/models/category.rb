@@ -5,6 +5,7 @@
 #  id                     :bigint           not null, primary key
 #  description            :text
 #  icon                   :string           default("")
+#  icon_color             :string           default("")
 #  locale                 :string           default("en")
 #  name                   :string
 #  position               :integer
@@ -71,6 +72,13 @@ class Category < ApplicationRecord
 
   def self.current_page(params)
     params[:page] || 1
+  end
+
+  def translation_family
+    root_id = associated_category_id || id
+    categories = portal.categories
+
+    categories.where(id: root_id).or(categories.where(associated_category_id: root_id))
   end
 
   def self.update_positions(portal:, positions_hash:)

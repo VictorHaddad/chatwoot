@@ -10,6 +10,12 @@ RSpec.describe Inbox do
     it { is_expected.to validate_presence_of(:name) }
   end
 
+  describe 'prevent_assignment_takeover' do
+    it 'is opt-in, so existing inboxes keep the last-write-wins behaviour' do
+      expect(create(:inbox).prevent_assignment_takeover).to be(false)
+    end
+  end
+
   describe 'associations' do
     it { is_expected.to belong_to(:account) }
 
@@ -29,6 +35,10 @@ RSpec.describe Inbox do
 
     it { is_expected.to have_one(:agent_bot_inbox) }
 
+    it { is_expected.to have_many(:agent_bot_observers).dependent(:destroy_async) }
+
+    it { is_expected.to have_many(:observer_agent_bots).through(:agent_bot_observers).source(:agent_bot) }
+
     it { is_expected.to have_many(:webhooks).dependent(:destroy_async) }
 
     it { is_expected.to have_many(:reporting_events) }
@@ -39,6 +49,34 @@ RSpec.describe Inbox do
   describe 'concerns' do
     it_behaves_like 'out_of_offisable'
     it_behaves_like 'avatarable'
+  end
+
+  describe 'account teardown' do
+    it 'destroys an orphaned inbox after its account has been deleted' do
+      account = create(:account)
+      inbox = create(:inbox, account: account)
+      account.delete
+
+      orphaned_inbox = described_class.find(inbox.id)
+
+      expect { orphaned_inbox.destroy! }.not_to raise_error
+    end
+  end
+
+  describe 'filtered unread count invalidation' do
+    let(:account) { create(:account) }
+    let(:inbox) { create(:inbox, account: account) }
+    let(:store) { Conversations::UnreadCounts::FilteredCountStore }
+
+    before do
+      account.enable_features!(:unread_count_for_filters)
+    end
+
+    it 'invalidates saved folder snapshots when destroyed' do
+      expect do
+        inbox.destroy!
+      end.to change { store.conversation_version(account.id) }.by(1)
+    end
   end
 
   describe '#add_members' do
@@ -386,6 +424,29 @@ RSpec.describe Inbox do
         inbox = FactoryBot.build(:inbox, name: 'Test Name with émojis 🎉')
         expect(inbox.sanitized_name).to eq('Test Name with émojis 🎉')
       end
+    end
+  end
+
+  describe '#webhook_data' do
+    it 'ships the inbox updated_at as sub-second float seconds that move on a rename' do
+      inbox = create(:inbox, name: 'Inbox A')
+      first = inbox.webhook_data[:updated_at]
+
+      inbox.update!(name: 'Inbox B')
+
+      expect(inbox.webhook_data).to include(id: inbox.id, name: 'Inbox B')
+      expect(inbox.webhook_data[:updated_at]).to be_a(Float)
+      expect(inbox.webhook_data[:updated_at]).to be > first
+      expect(inbox.webhook_data[:updated_at]).to eq(inbox.reload.updated_at.to_f)
+    end
+
+    it 'ships the instant the database stores, not the sub-microsecond clock of the record in memory' do
+      inbox = create(:inbox)
+      inbox.update!(updated_at: Time.zone.at(1_791_823_339, 276_299_712, :nsec))
+
+      stored = described_class.find(inbox.id).updated_at.to_f
+      expect(stored).to eq(Time.zone.at(1_791_823_339, 276_299, :usec).to_f)
+      expect(inbox.webhook_data[:updated_at]).to eq(stored)
     end
   end
 end

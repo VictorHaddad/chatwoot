@@ -1,5 +1,8 @@
 # pre-build stage
 FROM node:24-alpine as node
+# The WhatsApp connector Sidekiq runs unless WHATSAPP_CONNECTOR_ENABLED=false (see
+# docker/entrypoints/helpers/whatsapp_connector.rb). Pinned, and moved by Dependabot.
+FROM ghcr.io/fazer-ai/whatsapp-connector:0.8.5 AS whatsapp-connector
 FROM ruby:3.4.4-alpine3.21 AS pre-builder
 
 ARG NODE_VERSION="24.13.0"
@@ -131,6 +134,9 @@ RUN apk update && apk add --no-cache \
   ffmpeg \
   && gem install bundler -v "$BUNDLER_VERSION"
 
+# Restrict libvips to its trusted image loaders when generating variants
+ENV VIPS_BLOCK_UNTRUSTED=1
+
 COPY --from=node /usr/local/bin/node /usr/local/bin/
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
@@ -148,6 +154,15 @@ COPY --from=pre-builder /app /app
 # Copy .git_sha file from pre-builder stage
 COPY --from=pre-builder /app/.git_sha /app/.git_sha
 
+# A static binary, built for the platform this stage resolves to
+COPY --from=whatsapp-connector /connector /usr/local/bin/whatsapp-connector
+
 WORKDIR /app
 
 EXPOSE 3000
+
+# The worker's schema gate rides in the image instead of in a compose, because a gate that
+# has to be remembered in every deployment's compose is one that goes missing. It dispatches
+# by argv: a sidekiq command waits for the schema, everything else execs straight through.
+# A compose that sets its own `entrypoint:` still replaces this.
+ENTRYPOINT ["docker/entrypoints/docker-entrypoint.sh"]

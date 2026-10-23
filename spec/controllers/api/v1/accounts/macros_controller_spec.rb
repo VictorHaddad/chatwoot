@@ -239,6 +239,22 @@ RSpec.describe 'Api::V1::Accounts::MacrosController', type: :request do
         expect(json_response['error']).to eq('You are not authorized to do this action')
       end
 
+      # A public macro can still point to an agent when an admin who authored it
+      # is later changed to the agent role. Public macros should remain
+      # admin-managed even when the original author is no longer an admin.
+      it 'does not allow agents to update public macros they created' do
+        macro = create(:macro, account: account, created_by: agent, updated_by: agent, visibility: :global)
+
+        put "/api/v1/accounts/#{account.id}/macros/#{macro.id}",
+            params: params,
+            headers: agent.create_new_auth_token
+
+        json_response = response.parsed_body
+
+        expect(response).to have_http_status(:unauthorized)
+        expect(json_response['error']).to eq('You are not authorized to do this action')
+      end
+
       it 'allows update with existing blob_id' do
         blob = ActiveStorage::Blob.create_and_upload!(
           io: Rails.root.join('spec/assets/avatar.png').open,
@@ -279,6 +295,61 @@ RSpec.describe 'Api::V1::Accounts::MacrosController', type: :request do
         expect(response).to have_http_status(:success)
         expect(macro.reload.files.count).to eq(1)
       end
+    end
+  end
+
+  describe 'attachment authorization' do
+    let(:blob) { get_blob_for('spec/assets/avatar.png', 'image/png') }
+    let(:new_blob) { get_blob_for('spec/assets/avatar.png', 'image/png') }
+    let(:foreign_message) { create(:message, :with_attachment) }
+    let(:foreign_blob) { foreign_message.attachments.first.file.blob }
+    let(:macro) do
+      create(:macro, account: account, created_by: agent, updated_by: agent,
+                     actions: [{ action_name: 'send_attachment', action_params: [blob.id] }])
+    end
+
+    before { macro.files.attach(blob) }
+
+    it 'rejects a foreign raw blob id after an existing attachment without changing the macro' do
+      put "/api/v1/accounts/#{account.id}/macros/#{macro.id}",
+          params: { actions: [{ action_name: 'send_attachment', action_params: [blob.id, foreign_blob.id] }] },
+          headers: agent.create_new_auth_token, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to eq(I18n.t('errors.attachments.invalid'))
+      expect(macro.reload.actions.first['action_params']).to eq([blob.id])
+      expect(macro.files.blobs.pluck(:id)).to eq([blob.id])
+    end
+
+    it 'rejects a foreign raw blob id after a signed upload when creating a macro' do
+      expect do
+        post "/api/v1/accounts/#{account.id}/macros",
+             params: { name: 'Attachments', visibility: 'personal',
+                       actions: [{ action_name: 'send_attachment', action_params: [new_blob.signed_id, foreign_blob.id] }] },
+             headers: agent.create_new_auth_token, as: :json
+      end.not_to change(Macro, :count)
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to eq(I18n.t('errors.attachments.invalid'))
+    end
+
+    it 'retains existing attachments and attaches every signed upload in an action' do
+      put "/api/v1/accounts/#{account.id}/macros/#{macro.id}",
+          params: { actions: [{ action_name: 'send_attachment', action_params: [blob.id, new_blob.signed_id] }] },
+          headers: agent.create_new_auth_token, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(macro.reload.actions.first['action_params']).to eq([blob.id, new_blob.id])
+      expect(macro.files.blobs.pluck(:id)).to contain_exactly(blob.id, new_blob.id)
+    end
+
+    it 'rejects attachment actions without any file ids' do
+      put "/api/v1/accounts/#{account.id}/macros/#{macro.id}",
+          params: { actions: [{ action_name: 'send_attachment', action_params: [] }] },
+          headers: agent.create_new_auth_token, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to eq(I18n.t('errors.attachments.invalid'))
     end
   end
 
@@ -391,7 +462,7 @@ RSpec.describe 'Api::V1::Accounts::MacrosController', type: :request do
                  headers: administrator.create_new_auth_token
           end
 
-          expect(conversation.messages.activity.last.content).to eq("Assigned to #{user_1.name} by #{administrator.name}")
+          expect(conversation.reload.assignee_id).to eq(user_1.id)
         end
 
         it 'Assign the agent when he is not inbox member' do
@@ -405,7 +476,7 @@ RSpec.describe 'Api::V1::Accounts::MacrosController', type: :request do
                  headers: administrator.create_new_auth_token
           end
 
-          expect(conversation.messages.activity.last.content).not_to eq("Assigned to #{user_1.name} by #{administrator.name}")
+          expect(conversation.reload.assignee_id).to be_nil
         end
 
         it 'Assign the labels' do
@@ -544,6 +615,21 @@ RSpec.describe 'Api::V1::Accounts::MacrosController', type: :request do
 
         delete "/api/v1/accounts/#{account.id}/macros/#{macro.id}",
                headers: agent_1.create_new_auth_token
+
+        json_response = response.parsed_body
+
+        expect(response).to have_http_status(:unauthorized)
+        expect(json_response['error']).to eq('You are not authorized to do this action')
+      end
+
+      # A public macro can still point to an agent when an admin who authored it
+      # is later changed to the agent role. Public macros should remain
+      # admin-managed even when the original author is no longer an admin.
+      it 'does not allow agents to delete public macros they created' do
+        macro = create(:macro, account: account, created_by: agent, updated_by: agent, visibility: :global)
+
+        delete "/api/v1/accounts/#{account.id}/macros/#{macro.id}",
+               headers: agent.create_new_auth_token
 
         json_response = response.parsed_body
 

@@ -3,6 +3,7 @@ import { computed, ref, onBeforeMount } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getInboxIconByType } from 'dashboard/helper/inbox';
 import { dynamicTime, shortTimestamp } from 'shared/helpers/timeHelper';
+import { useExactTimestamp } from 'shared/composables/useExactTimestamp';
 import {
   snoozedReopenTimeToTimestamp,
   shortenSnoozeTime,
@@ -29,6 +30,8 @@ const emit = defineEmits([
   'deleteNotification',
 ]);
 
+const exactTimestamp = useExactTimestamp();
+
 const { t } = useI18n();
 
 const isContextMenuOpen = ref(false);
@@ -44,13 +47,17 @@ const getMessageClasses = {
 
 const primaryActor = computed(() => props.inboxItem?.primaryActor);
 const meta = computed(() => primaryActor.value?.meta);
-const assigneeMeta = computed(() => meta.value?.sender);
+// Conversations expose the sender under primaryActor.meta.sender; internal chat
+// notifications (channel primary actor) carry it on the message secondary actor.
+const assigneeMeta = computed(
+  () => meta.value?.sender || props.inboxItem?.secondaryActor?.sender || {}
+);
 const isUnread = computed(() => !props.inboxItem?.readAt);
 const inbox = computed(() => props.stateInbox);
 
 const inboxIcon = computed(() => {
-  const { channelType, medium } = inbox.value;
-  return getInboxIconByType(channelType, medium);
+  const { channelType, medium, voiceEnabled } = inbox.value;
+  return getInboxIconByType(channelType, medium, 'fill', voiceEnabled);
 });
 
 const hasSlaThreshold = computed(() => {
@@ -233,7 +240,13 @@ onBeforeMount(contextMenuActions.close);
             class="flex-shrink-0 text-n-slate-11 size-2.5"
           />
         </div>
-        <span class="text-xs text-n-slate-10">
+        <span
+          v-tooltip.top="{
+            content: exactTimestamp(inboxItem?.lastActivityAt),
+            delay: { show: 500, hide: 0 },
+          }"
+          class="text-xs text-n-slate-10"
+        >
           {{ lastActivityAt }}
         </span>
       </div>

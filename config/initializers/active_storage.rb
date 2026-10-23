@@ -1,0 +1,92 @@
+# Allow audio and video attachments (call recordings, voice notes, clips a contact sent)
+# to serve inline so the in-app players can stream them. Without this, ActiveStorage's blob
+# model forces Content-Disposition: attachment for any MIME outside the default allowlist
+# (images + PDF), which makes the browser download instead of play.
+#
+# `Blob#url` applies `forced_disposition_for_serving || disposition`, so this list wins over
+# whatever a caller asks for: an inline URL built for a type that is not here still serves
+# as an attachment. Which is why the two halves ship together, here and in
+# `Attachment#inline_storage_url`.
+#
+# Safari is the browser that made this visible. Chrome and Firefox play a `<video>` whose
+# response says attachment; Safari refuses, so a video arrived as a file to download while
+# the same code looked fine to anyone testing in Chrome.
+#
+# Nothing here is scriptable in the browser, which is what separates this list from
+# `content_types_to_serve_as_binary` (svg, html): serving a clip inline renders a clip.
+Rails.application.config.active_storage.content_types_allowed_inline += %w[
+  audio/webm
+  audio/ogg
+  audio/mpeg
+  audio/mp4
+  audio/x-m4a
+  audio/wav
+  audio/x-wav
+  video/mp4
+  video/webm
+  video/ogg
+  video/quicktime
+]
+
+module ActiveStorageDirectUploadMetadataFilter
+  INTERNAL_METADATA_KEYS = %w[identified analyzed composed].freeze
+
+  private
+
+  def blob_args
+    super.tap do |args|
+      args[:metadata]&.except!(*INTERNAL_METADATA_KEYS, *INTERNAL_METADATA_KEYS.map(&:to_sym))
+    end
+  end
+end
+
+module ActiveStorageProxyRangeLimit
+  STREAMING_MAX_RANGES = 1
+  STREAMING_CHUNK_MAX_SIZE = 100.megabytes
+
+  private
+
+  def send_blob_byte_range_data(blob, range_header, disposition: nil)
+    ranges = Rack::Utils.get_byte_ranges(range_header, blob.byte_size)
+    return head(:range_not_satisfiable) unless valid_ranges?(ranges)
+
+    super
+  end
+
+  def valid_ranges?(ranges)
+    ranges.present? &&
+      ranges.any?(&:present?) &&
+      ranges.length <= STREAMING_MAX_RANGES &&
+      ranges.sum { |range| range.end - range.begin } < STREAMING_CHUNK_MAX_SIZE
+  end
+end
+
+# Block the default Rails direct-upload route. Dashboard and widget uploads both go
+# through the scoped, authenticated /api/v1/... endpoints, so the bare route has no
+# legitimate caller; leaving it open allows anonymous blob creation. Scoped subclasses
+# call super and are exempt via the instance_of? check.
+module ActiveStorageBareDirectUploadGuard
+  extend ActiveSupport::Concern
+
+  included do
+    before_action :reject_bare_direct_upload
+  end
+
+  private
+
+  def reject_bare_direct_upload
+    head :forbidden if instance_of?(ActiveStorage::DirectUploadsController)
+  end
+end
+
+Rails.application.config.to_prepare do
+  unless ActiveStorage::DirectUploadsController < ActiveStorageDirectUploadMetadataFilter
+    ActiveStorage::DirectUploadsController.prepend(ActiveStorageDirectUploadMetadataFilter)
+  end
+
+  unless ActiveStorage::DirectUploadsController.include?(ActiveStorageBareDirectUploadGuard)
+    ActiveStorage::DirectUploadsController.include(ActiveStorageBareDirectUploadGuard)
+  end
+
+  ActiveStorage::Streaming.prepend(ActiveStorageProxyRangeLimit) unless ActiveStorage::Streaming < ActiveStorageProxyRangeLimit
+end

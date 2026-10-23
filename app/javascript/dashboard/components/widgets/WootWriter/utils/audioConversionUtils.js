@@ -137,13 +137,25 @@ export const convertToMp3 = async (audioBlob, bitrate = 128) => {
 
 export const convertAudio = async (inputBlob, outputFormat, bitrate = 128) => {
   let audio;
-  if (outputFormat === 'audio/ogg') {
-    // Chrome produces WebM even when OGG is requested; remux to proper OGG/Opus
-    audio = await remuxWebmToOgg(inputBlob);
-  } else if (outputFormat === 'audio/wav') {
+  if (outputFormat === 'audio/wav') {
     audio = await convertToWav(inputBlob);
   } else if (outputFormat === 'audio/mp3') {
     audio = await convertToMp3(inputBlob, bitrate);
+  } else if (outputFormat === 'audio/ogg') {
+    const inputType = inputBlob.type.split(';')[0].trim();
+    if (inputType === 'audio/webm' || inputType === 'video/webm') {
+      audio = await remuxWebmToOgg(inputBlob);
+    } else if (inputType === 'audio/ogg') {
+      audio = inputBlob;
+    } else {
+      // Browsers that record neither WebM nor OGG (e.g. Safari records
+      // audio/mp4) cannot produce OGG/Opus. Fall back to MP3 so the recording
+      // still sends instead of failing. The caller flags every recording as a
+      // voice note regardless of what comes back here, and that is now correct:
+      // WhatsApp accepts the voice flag on MP3 too. What the fallback costs is
+      // the waveform, which only Opus carries.
+      audio = await convertToMp3(inputBlob, bitrate);
+    }
   } else {
     throw new Error('Unsupported output format');
   }

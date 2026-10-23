@@ -73,6 +73,25 @@ RSpec.describe 'Notifications API', type: :request do
         expect(notification1.reload.read_at).not_to eq('')
         expect(notification2.reload.read_at).to be_nil
       end
+
+      it 'scopes read_all to an internal chat channel primary actor' do
+        channel = create(:internal_chat_channel, :public_channel, account: account)
+        # Force a same-id collision across actor types so the test fails if read_all ignores primary_actor_type
+        notification1.update_column(:primary_actor_id, channel.id) # rubocop:disable Rails/SkipsModelValidations
+        message = create(:internal_chat_message, account: account, channel: channel)
+        channel_notification = create(:notification, account: account, user: admin, notification_type: 'internal_chat_mention',
+                                                     primary_actor: channel, secondary_actor: message)
+
+        post "/api/v1/accounts/#{account.id}/notifications/read_all",
+             headers: admin.create_new_auth_token,
+             params: { primary_actor_id: channel.id, primary_actor_type: 'InternalChat::Channel' },
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(channel_notification.reload.read_at).not_to be_nil
+        expect(notification1.reload.read_at).to be_nil
+        expect(notification2.reload.read_at).to be_nil
+      end
     end
   end
 
@@ -100,6 +119,20 @@ RSpec.describe 'Notifications API', type: :request do
 
         expect(response).to have_http_status(:success)
         expect(notification.reload.read_at).not_to eq('')
+      end
+
+      it 'does not update a notification reached via a different account that the user belongs to' do
+        other_account = create(:account)
+        create(:account_user, account: other_account, user: admin, role: :administrator)
+        original_read_at = notification.read_at
+
+        patch "/api/v1/accounts/#{other_account.id}/notifications/#{notification.id}",
+              headers: admin.create_new_auth_token,
+              params: { read_at: true },
+              as: :json
+
+        expect(response).to have_http_status(:not_found)
+        expect(notification.reload.read_at).to eq(original_read_at)
       end
     end
   end
@@ -227,7 +260,7 @@ RSpec.describe 'Notifications API', type: :request do
       let(:admin) { create(:user, account: account, role: :administrator) }
 
       it 'deletes all the read notifications' do
-        expect(Notification::DeleteNotificationJob).to receive(:perform_later).with(admin, type: :read)
+        expect(Notification::DeleteNotificationJob).to receive(:perform_later).with(admin, account, type: :read)
 
         post "/api/v1/accounts/#{account.id}/notifications/destroy_all",
              headers: admin.create_new_auth_token,
@@ -238,7 +271,7 @@ RSpec.describe 'Notifications API', type: :request do
       end
 
       it 'deletes all the notifications' do
-        expect(Notification::DeleteNotificationJob).to receive(:perform_later).with(admin, type: :all)
+        expect(Notification::DeleteNotificationJob).to receive(:perform_later).with(admin, account, type: :all)
 
         post "/api/v1/accounts/#{account.id}/notifications/destroy_all",
              headers: admin.create_new_auth_token,

@@ -1,16 +1,28 @@
 <script setup>
 import { computed } from 'vue';
+import { I18nT } from 'vue-i18n';
 import { useMessageContext } from '../provider.js';
 import { useInbox } from 'dashboard/composables/useInbox';
 import BaseBubble from './Base.vue';
 
-const { inboxId } = useMessageContext();
+const WHATSAPP_UNSUPPORTED_MESSAGE_HELP_URL =
+  'https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users#linked-devices';
 
-const { isAFacebookInbox, isAnInstagramChannel, isATiktokChannel } = useInbox(
-  inboxId.value
-);
+const { inboxId, contentAttributes } = useMessageContext();
+
+const {
+  isAFacebookInbox,
+  isAnInstagramChannel,
+  isATiktokChannel,
+  isAWhatsAppCloudChannel,
+} = useInbox(inboxId.value);
+
+const isMasked = computed(() => !!contentAttributes.value?.isMasked);
 
 const unsupportedMessageKey = computed(() => {
+  // WhatsApp withholds verification codes from linked devices: the row is empty
+  // because the content never arrived, not because the type is unknown.
+  if (isMasked.value) return 'CONVERSATION.MASKED_MESSAGE_WHATSAPP';
   if (isAFacebookInbox.value)
     return 'CONVERSATION.UNSUPPORTED_MESSAGE_FACEBOOK';
   if (isAnInstagramChannel.value)
@@ -22,6 +34,32 @@ const unsupportedMessageKey = computed(() => {
 
 <template>
   <BaseBubble class="px-4 py-3 text-sm" data-bubble-name="unsupported">
-    {{ $t(unsupportedMessageKey) }}
+    <!-- The Coexistence copy names Meta; a paired-session provider falls back to the generic text. -->
+    <template v-if="isAWhatsAppCloudChannel && !isMasked">
+      <p class="m-0 font-semibold">
+        {{ $t('CONVERSATION.UNSUPPORTED_MESSAGE_WHATSAPP_TITLE') }}
+      </p>
+      <p class="mt-2 mb-0">
+        {{ $t('CONVERSATION.UNSUPPORTED_MESSAGE_WHATSAPP') }}
+      </p>
+      <I18nT
+        keypath="CONVERSATION.UNSUPPORTED_MESSAGE_WHATSAPP_DETAILS"
+        tag="p"
+        scope="global"
+        class="mt-2 mb-0"
+      >
+        <template #documentation>
+          <a
+            :href="WHATSAPP_UNSUPPORTED_MESSAGE_HELP_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-current underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          >
+            {{ $t('CONVERSATION.UNSUPPORTED_MESSAGE_WHATSAPP_LEARN_MORE') }}
+          </a>
+        </template>
+      </I18nT>
+    </template>
+    <p v-else class="m-0">{{ $t(unsupportedMessageKey) }}</p>
   </BaseBubble>
 </template>

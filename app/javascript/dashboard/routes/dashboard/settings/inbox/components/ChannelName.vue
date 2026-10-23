@@ -2,6 +2,7 @@
 import { useI18n } from 'vue-i18n';
 import { useStoreGetters } from 'dashboard/composables/store';
 import { computed } from 'vue';
+import { isSessionProvider } from 'dashboard/helper/whatsappSession';
 
 const props = defineProps({
   channelType: {
@@ -15,6 +16,10 @@ const props = defineProps({
   provider: {
     type: String,
     default: '',
+  },
+  voiceEnabled: {
+    type: Boolean,
+    default: false,
   },
 });
 const getters = useStoreGetters();
@@ -34,7 +39,6 @@ const i18nMap = {
   'Channel::Api': 'API',
   'Channel::Instagram': 'INSTAGRAM',
   'Channel::Tiktok': 'TIKTOK',
-  'Channel::Voice': 'VOICE',
 };
 
 const twilioChannelName = () => {
@@ -45,11 +49,8 @@ const twilioChannelName = () => {
 };
 
 const whatsappChannelName = () => {
-  if (props.provider === 'baileys') {
-    return t(`INBOX_MGMT.CHANNELS.WHATSAPP_BAILEYS`);
-  }
-  if (props.provider === 'zapi') {
-    return t(`INBOX_MGMT.CHANNELS.WHATSAPP_ZAPI`);
+  if (isSessionProvider(props.provider)) {
+    return t(`INBOX_MGMT.CHANNELS.WHATSAPP_${props.provider.toUpperCase()}`);
   }
   return t(`INBOX_MGMT.CHANNELS.WHATSAPP`);
 };
@@ -59,6 +60,9 @@ const readableChannelName = computed(() => {
     return globalConfig.value.apiChannelName || t('INBOX_MGMT.CHANNELS.API');
   }
   if (props.channelType === 'Channel::TwilioSms') {
+    if (props.voiceEnabled) {
+      return t('INBOX_MGMT.CHANNELS.VOICE');
+    }
     return twilioChannelName();
   }
   if (props.channelType === 'Channel::Whatsapp') {

@@ -2,8 +2,10 @@
 import { onMounted, onUnmounted, computed, ref, toRefs } from 'vue';
 import { useTimeoutFn } from '@vueuse/core';
 import { provideMessageContext } from './provider.js';
+import { isContactSide } from 'dashboard/store/modules/conversations/helpers';
 import { useTrack } from 'dashboard/composables';
 import { useMapGetter } from 'dashboard/composables/store';
+import { useAccount } from 'dashboard/composables/useAccount';
 import { emitter } from 'shared/helpers/mitt';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
@@ -11,6 +13,10 @@ import { LocalStorage } from 'shared/helpers/localStorage';
 import { ACCOUNT_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
 import { LOCAL_STORAGE_KEYS } from 'dashboard/constants/localStorage';
 import { getInboxIconByType } from 'dashboard/helper/inbox';
+import {
+  canDeleteMessages,
+  getUserRole,
+} from 'dashboard/helper/permissionsHelper.js';
 import { BUS_EVENTS } from 'shared/constants/busEvents';
 import {
   MESSAGE_TYPES,
@@ -31,21 +37,27 @@ import FileBubble from './bubbles/File.vue';
 import AudioBubble from './bubbles/Audio.vue';
 import VideoBubble from './bubbles/Video.vue';
 import EmbedBubble from './bubbles/Embed.vue';
+import FallbackBubble from './bubbles/Fallback.vue';
 import InstagramStoryBubble from './bubbles/InstagramStory.vue';
 import EmailBubble from './bubbles/Email/Index.vue';
 import UnsupportedBubble from './bubbles/Unsupported.vue';
+import RichMessageBubble from './bubbles/RichMessage.vue';
 import ContactBubble from './bubbles/Contact.vue';
 import DyteBubble from './bubbles/Dyte.vue';
 import LocationBubble from './bubbles/Location.vue';
 import CSATBubble from './bubbles/CSAT.vue';
 import FormBubble from './bubbles/Form.vue';
 import VoiceCallBubble from './bubbles/VoiceCall.vue';
+import WhatsappFlowResponseBubble from './bubbles/WhatsappFlowResponse.vue';
 
 import MessageError from './MessageError.vue';
+import ForwardEmailPanel from './forward/ForwardEmailPanel.vue';
+import ForwardedEmailBanner from './forward/ForwardedEmailBanner.vue';
 import ContextMenu from 'dashboard/modules/conversations/components/MessageContextMenu.vue';
 import EmojiReactionPicker from './EmojiReactionPicker.vue';
 import ReactionDisplay from './ReactionDisplay.vue';
 import { useBranding } from 'shared/composables/useBranding';
+import { useTranslations } from 'dashboard/composables/useTranslations';
 
 /**
  * @typedef {Object} Attachment
@@ -116,6 +128,7 @@ const props = defineProps({
     validator: value => Object.values(MESSAGE_STATUS).includes(value),
   },
   attachments: { type: Array, default: () => [] },
+  call: { type: Object, default: null }, // eslint-disable-line vue/no-unused-properties
   content: { type: String, default: null },
   contentAttributes: { type: Object, default: () => ({}) },
   contentType: {
@@ -151,12 +164,53 @@ const contextMenuPosition = ref({});
 const showBackgroundHighlight = ref(false);
 const showContextMenu = ref(false);
 const reactionPickerOpen = ref(false);
+const showForwardEmail = ref(false);
+const forwardEmailPosition = ref({});
 const { t } = useI18n();
 const route = useRoute();
 const inboxGetter = useMapGetter('inboxes/getInbox');
 const inbox = computed(() => inboxGetter.value(props.inboxId) || {});
 const router = useRouter();
+const isOnChatwootCloud = useMapGetter('globalConfig/isOnChatwootCloud');
 const { replaceInstallationName } = useBranding();
+const { accountId: currentAccountId, currentAccount } = useAccount();
+const currentUser = useMapGetter('getCurrentUser');
+
+// Mirrors `MessagePolicy#destroy?`: hiding the option is a convenience, the
+// endpoint enforces the same rule.
+const canDeleteMessage = computed(() =>
+  canDeleteMessages({
+    userRole: getUserRole(currentUser.value, currentAccountId.value),
+    accountSettings: currentAccount.value?.settings || {},
+  })
+);
+const autoTranslate = useMapGetter('getAutoTranslate');
+const translationState = useMapGetter('getMessageTranslationState');
+const showingOriginal = ref(false);
+const contactSide = computed(() =>
+  isContactSide(props.messageType, props.sender?.type ?? props.senderType)
+);
+const { translationContent } = useTranslations(
+  computed(() => props.contentAttributes),
+  contactSide
+);
+const displayedContent = computed(() =>
+  showingOriginal.value || !translationContent.value
+    ? props.content
+    : translationContent.value
+);
+
+const isAutoTranslated = computed(() => {
+  const { pending } = translationState.value(props.id);
+  return (
+    !!autoTranslate.value.language && (!!translationContent.value || pending)
+  );
+});
+
+const isCaptainMessage = computed(() => {
+  const senderType = props.sender?.type ?? props.senderType;
+  return senderType === SENDER_TYPES.CAPTAIN_ASSISTANT;
+});
 
 /**
  * Computes the message variant based on props
@@ -320,6 +374,10 @@ const componentToRender = computed(() => {
     if (emailInboxTypes.includes(props.messageType)) return EmailBubble;
   }
 
+  if (props.contentAttributes?.whatsappFlowResponse) {
+    return WhatsappFlowResponseBubble;
+  }
+
   if (props.contentType === CONTENT_TYPES.INPUT_CSAT) {
     return CSATBubble;
   }
@@ -359,6 +417,8 @@ const componentToRender = computed(() => {
   if (Array.isArray(props.attachments) && props.attachments.length === 1) {
     const fileType = props.attachments[0].fileType;
 
+    if (fileType === ATTACHMENT_TYPES.FALLBACK) return FallbackBubble;
+
     if (!props.content) {
       if (fileType === ATTACHMENT_TYPES.IMAGE) return ImageBubble;
       if (fileType === ATTACHMENT_TYPES.FILE) return FileBubble;
@@ -370,6 +430,10 @@ const componentToRender = computed(() => {
     }
     // Attachment content is the name of the contact
     if (fileType === ATTACHMENT_TYPES.CONTACT) return ContactBubble;
+  }
+
+  if (props.contentAttributes?.rich) {
+    return RichMessageBubble;
   }
 
   return TextBubble;
@@ -389,11 +453,21 @@ const isMessageDeleted = computed(() => {
   return props.contentAttributes?.deleted;
 });
 
+const isForwardedEmail = computed(
+  () => !!props.contentAttributes?.forwardedMessageId && !isMessageDeleted.value
+);
+
+const shouldShowWhatsappReferral = computed(
+  () =>
+    variant.value === MESSAGE_VARIANTS.USER &&
+    !!props.contentAttributes?.referral
+);
+
 const payloadForContextMenu = computed(() => {
   return {
     id: props.id,
     content_attributes: props.contentAttributes,
-    content: props.content,
+    content: displayedContent.value,
     conversation_id: props.conversationId,
   };
 });
@@ -401,6 +475,7 @@ const payloadForContextMenu = computed(() => {
 const contextMenuEnabledOptions = computed(() => {
   const hasText = !!props.content;
   const hasAttachments = !!(props.attachments && props.attachments.length > 0);
+  const hasRichContent = !!props.contentAttributes?.rich;
 
   const isOutgoing = props.messageType === MESSAGE_TYPES.OUTGOING;
   const isFailedOrProcessing =
@@ -410,15 +485,19 @@ const contextMenuEnabledOptions = computed(() => {
   return {
     copy: hasText,
     delete:
-      (hasText || hasAttachments) &&
+      canDeleteMessage.value &&
+      (hasText || hasAttachments || hasRichContent) &&
       !isFailedOrProcessing &&
       !isMessageDeleted.value,
     cannedResponse: isOutgoing && hasText && !isMessageDeleted.value,
     copyLink: !isFailedOrProcessing,
-    translate: !isFailedOrProcessing && !isMessageDeleted.value && hasText,
+    translate:
+      !isFailedOrProcessing &&
+      !isMessageDeleted.value &&
+      hasText &&
+      !isAutoTranslated.value,
     replyTo:
-      !props.private &&
-      props.inboxSupportsReplyTo.outgoing &&
+      (props.private || props.inboxSupportsReplyTo.outgoing) &&
       !isFailedOrProcessing,
     edit:
       isOutgoing &&
@@ -426,21 +505,32 @@ const contextMenuEnabledOptions = computed(() => {
       !isFailedOrProcessing &&
       !isMessageDeleted.value &&
       props.inboxSupportsEdit,
+    forwardEmail:
+      props.isEmailInbox &&
+      !props.private &&
+      !isFailedOrProcessing &&
+      !isMessageDeleted.value,
+    report:
+      isOnChatwootCloud.value &&
+      isCaptainMessage.value &&
+      !isMessageDeleted.value,
   };
 });
 
 const canShowReactionToolbar = computed(() => {
-  if (!props.inboxSupportsReactions) return false;
   if (!isBubble.value) return false;
   if (isMessageDeleted.value) return false;
   if (props.contentAttributes?.isUnsupported) return false;
   if (props.status === MESSAGE_STATUS.FAILED) return false;
   if (props.status === MESSAGE_STATUS.PROGRESS) return false;
-  if (props.private) return false;
   if (props.messageType === MESSAGE_TYPES.TEMPLATE) return false;
-  // Mirror ReactionsController#target_unreactable_error: a message without a
-  // provider source_id can't be reacted to on WhatsApp, so the API would 422
-  // if the user clicked. Hide the picker instead of offering a dead action.
+  // Private notes are agent-only and never leave Chatwoot, so reactions on
+  // them don't depend on inbox channel capabilities or a provider source_id.
+  if (props.private) return true;
+  if (!props.inboxSupportsReactions) return false;
+  // Mirror ReactionsController#target_unreactable_error: a non-private message
+  // without a provider source_id can't be reacted to on WhatsApp, so the API
+  // would 422 if the user clicked. Hide the picker instead of a dead action.
   if (!props.sourceId) return false;
   return true;
 });
@@ -494,8 +584,11 @@ const shouldRenderMessage = computed(() => {
   const isUnsupported = props.contentAttributes?.isUnsupported;
   const isAnIntegrationMessage =
     props.contentType === CONTENT_TYPES.INTEGRATIONS;
+  const hasWhatsappFlowResponse =
+    !!props.contentAttributes?.whatsappFlowResponse;
   const isFailedMessage = props.status === MESSAGE_STATUS.FAILED;
   const hasExternalError = !!props.contentAttributes?.externalError;
+  const hasRichContent = !!props.contentAttributes?.rich;
 
   return (
     hasAttachments ||
@@ -503,8 +596,11 @@ const shouldRenderMessage = computed(() => {
     isEmailContentType ||
     isUnsupported ||
     isAnIntegrationMessage ||
+    hasWhatsappFlowResponse ||
+    shouldShowWhatsappReferral.value ||
     isFailedMessage ||
-    hasExternalError
+    hasExternalError ||
+    hasRichContent
   );
 });
 
@@ -532,6 +628,11 @@ function closeContextMenu() {
   contextMenuPosition.value = { x: null, y: null };
 }
 
+function openForwardEmail() {
+  forwardEmailPosition.value = { ...contextMenuPosition.value };
+  showForwardEmail.value = true;
+}
+
 function handleReplyTo() {
   const replyStorageKey = LOCAL_STORAGE_KEYS.MESSAGE_REPLY_TO;
   const { conversationId, id: replyTo } = props;
@@ -542,10 +643,11 @@ function handleReplyTo() {
 
 const avatarInfo = computed(() => {
   if (props.contentAttributes?.externalEcho) {
-    const { name, avatar_url, channel_type, medium } = inbox.value;
+    const { name, avatar_url, channel_type, medium, voice_enabled } =
+      inbox.value;
     const iconName = avatar_url
       ? null
-      : getInboxIconByType(channel_type, medium);
+      : getInboxIconByType(channel_type, medium, 'fill', voice_enabled);
     return {
       name: iconName ? '' : name || t('CONVERSATION.NATIVE_APP'),
       src: avatar_url || '',
@@ -669,6 +771,9 @@ onUnmounted(() => {
 
 provideMessageContext({
   ...toRefs(props),
+  showingOriginal,
+  contactSide,
+  isCaptainMessage,
   isPrivate: computed(() => props.private),
   variant,
   orientation,
@@ -738,11 +843,20 @@ provideMessageContext({
           {{ sender?.name }}
         </span>
         <div
-          class="flex"
+          v-if="isForwardedEmail"
+          class="flex min-w-0 mb-2"
           :class="{
             'ltr:ml-8 rtl:mr-8 justify-end': orientation === ORIENTATION.RIGHT,
             'ltr:mr-8 rtl:ml-8': orientation === ORIENTATION.LEFT,
-            'min-w-0': variant === MESSAGE_VARIANTS.EMAIL,
+          }"
+        >
+          <ForwardedEmailBanner />
+        </div>
+        <div
+          class="flex min-w-0"
+          :class="{
+            'ltr:ml-8 rtl:mr-8 justify-end': orientation === ORIENTATION.RIGHT,
+            'ltr:mr-8 rtl:ml-8': orientation === ORIENTATION.LEFT,
           }"
         >
           <div class="relative">
@@ -783,7 +897,7 @@ provideMessageContext({
             :current-user-id="currentUserId"
             :pending-emojis="pendingEmojis"
             :alignment="orientation === ORIENTATION.RIGHT ? 'right' : 'left'"
-            :read-only="!inboxSupportsReactions"
+            :read-only="!inboxSupportsReactions && !props.private"
             :overlap="!isAudioBubble"
             @toggle="handleToggleReaction"
           />
@@ -808,6 +922,13 @@ provideMessageContext({
         @open="openContextMenu"
         @close="closeContextMenu"
         @reply-to="handleReplyTo"
+        @forward-email="openForwardEmail"
+      />
+      <ForwardEmailPanel
+        v-if="showForwardEmail"
+        :x="forwardEmailPosition.x"
+        :y="forwardEmailPosition.y"
+        @close="showForwardEmail = false"
       />
     </div>
   </div>

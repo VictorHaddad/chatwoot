@@ -4,7 +4,6 @@ import { differenceInSeconds } from 'date-fns';
 import {
   isAConversationRoute,
   isAInboxViewRoute,
-  isNotificationRoute,
 } from 'dashboard/helper/routeHelpers';
 import ReconnectService from 'dashboard/helper/ReconnectService';
 
@@ -23,7 +22,6 @@ vi.mock('date-fns', () => ({
 vi.mock('dashboard/helper/routeHelpers', () => ({
   isAConversationRoute: vi.fn(),
   isAInboxViewRoute: vi.fn(),
-  isNotificationRoute: vi.fn(),
 }));
 
 const storeMock = {
@@ -32,6 +30,7 @@ const storeMock = {
     getAppliedConversationFiltersQuery: [],
     'customViews/getActiveConversationFolder': { query: {} },
     'notifications/getNotificationFilters': {},
+    getChatListFilters: { assigneeType: 'unassigned', status: 'open' },
   },
 };
 
@@ -130,30 +129,14 @@ describe('ReconnectService', () => {
   });
 
   describe('fetchConversations', () => {
-    it('should update the filters with disconnected time and the threshold', async () => {
-      reconnectService.getSecondsSinceDisconnect = vi.fn().mockReturnValue(100);
-      await reconnectService.fetchConversations();
-      expect(storeMock.dispatch).toHaveBeenCalledWith('updateChatListFilters', {
-        page: null,
-        updatedWithin: 115,
-      });
-    });
-
     it('should dispatch updateChatListFilters and fetchAllConversations', async () => {
-      reconnectService.getSecondsSinceDisconnect = vi.fn().mockReturnValue(100);
       await reconnectService.fetchConversations();
       expect(storeMock.dispatch).toHaveBeenCalledWith('updateChatListFilters', {
-        page: null,
-        updatedWithin: 115,
-      });
-      expect(storeMock.dispatch).toHaveBeenCalledWith('fetchAllConversations');
-    });
-
-    it('should dispatch updateChatListFilters and reset updatedWithin', async () => {
-      reconnectService.getSecondsSinceDisconnect = vi.fn().mockReturnValue(100);
-      await reconnectService.fetchConversations();
-      expect(storeMock.dispatch).toHaveBeenCalledWith('updateChatListFilters', {
+        page: 1,
         updatedWithin: null,
+      });
+      expect(storeMock.dispatch).toHaveBeenCalledWith('fetchAllConversations', {
+        replaceExisting: true,
       });
     });
   });
@@ -164,7 +147,11 @@ describe('ReconnectService', () => {
       await reconnectService.fetchFilteredOrSavedConversations(payload);
       expect(storeMock.dispatch).toHaveBeenCalledWith(
         'fetchFilteredConversations',
-        { queryData: payload, page: 1 }
+        {
+          queryData: payload,
+          page: 1,
+          replaceExisting: true,
+        }
       );
     });
   });
@@ -222,10 +209,11 @@ describe('ReconnectService', () => {
     });
   });
 
-  describe('fetchConversationMessagesOnReconnect', () => {
-    it('should dispatch syncActiveConversationMessages if conversationId exists', async () => {
+  describe('refreshActiveConversationOnReconnect', () => {
+    it('should refresh the conversation and its messages if conversationId exists', async () => {
       routerMock.currentRoute.value.params.conversation_id = 1;
-      await reconnectService.fetchConversationMessagesOnReconnect();
+      await reconnectService.refreshActiveConversationOnReconnect();
+      expect(storeMock.dispatch).toHaveBeenCalledWith('getConversation', 1);
       expect(storeMock.dispatch).toHaveBeenCalledWith(
         'syncActiveConversationMessages',
         { conversationId: 1 }
@@ -234,7 +222,11 @@ describe('ReconnectService', () => {
 
     it('should not dispatch syncActiveConversationMessages if conversationId does not exist', async () => {
       routerMock.currentRoute.value.params.conversation_id = null;
-      await reconnectService.fetchConversationMessagesOnReconnect();
+      await reconnectService.refreshActiveConversationOnReconnect();
+      expect(storeMock.dispatch).not.toHaveBeenCalledWith(
+        'getConversation',
+        expect.anything()
+      );
       expect(storeMock.dispatch).not.toHaveBeenCalledWith(
         'syncActiveConversationMessages',
         expect.anything()
@@ -281,24 +273,17 @@ describe('ReconnectService', () => {
         reconnectService,
         'fetchConversationsOnReconnect'
       );
-      const spyMessages = vi.spyOn(
+      const spyActiveConversation = vi.spyOn(
         reconnectService,
-        'fetchConversationMessagesOnReconnect'
+        'refreshActiveConversationOnReconnect'
       );
       await reconnectService.handleRouteSpecificFetch();
       expect(spyConversations).toHaveBeenCalled();
-      expect(spyMessages).toHaveBeenCalled();
+      expect(spyActiveConversation).toHaveBeenCalled();
     });
 
     it('should fetch notifications if current route is an inbox view route', async () => {
       isAInboxViewRoute.mockReturnValue(true);
-      const spy = vi.spyOn(reconnectService, 'fetchNotificationsOnReconnect');
-      await reconnectService.handleRouteSpecificFetch();
-      expect(spy).toHaveBeenCalled();
-    });
-
-    it('should fetch notifications if current route is a notification route', async () => {
-      isNotificationRoute.mockReturnValue(true);
       const spy = vi.spyOn(reconnectService, 'fetchNotificationsOnReconnect');
       await reconnectService.handleRouteSpecificFetch();
       expect(spy).toHaveBeenCalled();

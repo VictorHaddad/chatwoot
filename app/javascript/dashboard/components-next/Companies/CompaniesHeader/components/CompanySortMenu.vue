@@ -36,6 +36,10 @@ const sortMenus = [
     value: 'created_at',
   },
   {
+    label: t('COMPANIES.SORT_BY.OPTIONS.LAST_ACTIVITY_AT'),
+    value: 'last_activity_at',
+  },
+  {
     label: t('COMPANIES.SORT_BY.OPTIONS.CONTACTS_COUNT'),
     value: 'contacts_count',
   },
@@ -91,7 +95,7 @@ const handleOrderChange = value => {
     <div
       v-if="isMenuOpen"
       v-on-clickaway="() => (isMenuOpen = false)"
-      class="absolute top-full mt-1 ltr:-right-32 rtl:-left-32 sm:ltr:right-0 sm:rtl:left-0 flex flex-col gap-4 bg-n-alpha-3 backdrop-blur-[100px] border border-n-weak w-72 rounded-xl p-4"
+      class="absolute top-full mt-1 end-0 flex flex-col gap-4 bg-n-alpha-3 backdrop-blur-[100px] border border-n-weak w-72 rounded-xl p-4"
     >
       <div class="flex items-center justify-between gap-2">
         <span class="text-sm text-n-slate-12">
@@ -101,6 +105,7 @@ const handleOrderChange = value => {
           :model-value="activeSort"
           :options="sortMenus"
           :label="activeSortLabel"
+          sub-menu-position="left"
           @update:model-value="handleSortChange"
         />
       </div>
@@ -112,6 +117,7 @@ const handleOrderChange = value => {
           :model-value="activeOrdering"
           :options="orderingMenus"
           :label="activeOrderingLabel"
+          sub-menu-position="left"
           @update:model-value="handleOrderChange"
         />
       </div>

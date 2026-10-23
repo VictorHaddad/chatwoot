@@ -4,7 +4,9 @@ import { required, minLength } from '@vuelidate/validators';
 import { mapGetters } from 'vuex';
 import { useAlert } from 'dashboard/composables';
 import { convertToAttributeSlug } from 'dashboard/helper/commons.js';
+import { normalizeRegexPattern } from 'shared/helpers/Validators';
 import { ATTRIBUTE_MODELS, ATTRIBUTE_TYPES } from './constants';
+import { FEATURE_FLAGS } from 'dashboard/featureFlags';
 
 import NextButton from 'dashboard/components-next/button/Button.vue';
 import TagInput from 'dashboard/components-next/taginput/TagInput.vue';
@@ -19,7 +21,7 @@ export default {
       type: Function,
       default: () => {},
     },
-    // Passes 0 or 1 based on the selected AttributeModel tab selected in the UI
+    // Passes 0, 1 or 2 (the attribute_model enum) based on the selected tab
     // Needs a better data type, todo: refactor this component later
     selectedAttributeModelTab: {
       type: Number,
@@ -51,9 +53,17 @@ export default {
   computed: {
     ...mapGetters({
       uiFlags: 'getUIFlags',
+      accountId: 'getCurrentAccountId',
+      isFeatureEnabledonAccount: 'accounts/isFeatureEnabledonAccount',
     }),
     models() {
-      return ATTRIBUTE_MODELS.map(item => ({
+      const companiesEnabled = this.isFeatureEnabledonAccount(
+        this.accountId,
+        FEATURE_FLAGS.COMPANIES
+      );
+      return ATTRIBUTE_MODELS.filter(
+        item => item.key !== 'COMPANY' || companiesEnabled
+      ).map(item => ({
         ...item,
         option: this.$t(`ATTRIBUTES_MGMT.ATTRIBUTE_MODELS.${item.key}`),
       }));
@@ -99,19 +109,10 @@ export default {
   },
 
   validations: {
-    displayName: {
-      required,
-      minLength: minLength(1),
-    },
-    description: {
-      required,
-    },
-    attributeModel: {
-      required,
-    },
-    attributeType: {
-      required,
-    },
+    displayName: { required, minLength: minLength(1) },
+    description: { required },
+    attributeModel: { required },
+    attributeType: { required },
     attributeKey: {
       required,
       isKey(value) {
@@ -151,9 +152,7 @@ export default {
           attribute_display_type: this.attributeType,
           attribute_key: this.attributeKey,
           attribute_values: this.attributeListValues,
-          regex_pattern: this.regexPattern
-            ? new RegExp(this.regexPattern).toString()
-            : null,
+          regex_pattern: normalizeRegexPattern(this.regexPattern),
           regex_cue: this.regexCue,
         });
         this.alertMessage = this.$t('ATTRIBUTES_MGMT.ADD.API.SUCCESS_MESSAGE');

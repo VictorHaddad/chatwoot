@@ -8,6 +8,7 @@ class BulkActionsJob < ApplicationJob
 
   def perform(account:, params:, user:)
     @account = account
+    @user = user
     Current.user = user
     @params = params
     @records = records_to_updated(params[:ids])
@@ -27,6 +28,10 @@ class BulkActionsJob < ApplicationJob
       bulk_add_labels(conversation)
       bulk_snoozed_until(conversation)
       conversation.update!(params) if params
+    rescue CustomExceptions::Conversation::AlreadyAssigned
+      # The conversation belongs to another agent. Skip it instead of taking the
+      # rest of the batch down with it: there is no response to raise into here.
+      next
     end
   end
 
@@ -61,6 +66,7 @@ class BulkActionsJob < ApplicationJob
     current_model = @params[:type].camelcase
     return unless MODEL_TYPE.include?(current_model)
 
-    current_model.constantize&.where(account_id: @account.id, display_id: ids)
+    scope = current_model.constantize.where(account_id: @account.id, display_id: ids)
+    Conversations::PermissionFilterService.new(scope, @user, @account).perform
   end
 end

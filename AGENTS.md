@@ -11,7 +11,7 @@
   - CLI path: `bundle exec rails runner "Internal::SeedAccountJob.perform_now(Account.find(<id>))"` (or call `Seeders::AccountSeeder.new(account: Account.find(<id>)).perform!` directly).
 - **Lint JS/Vue**: `pnpm eslint` / `pnpm eslint:fix`
 - **Lint Ruby**: `bundle exec rubocop -a`
-- **Test JS**: `pnpm test` or `pnpm test:watch`
+- **Test JS**: `pnpm test` or `pnpm test:watch`. Pass the file directly (`pnpm test <file>`), never `pnpm test -- <file>`
 - **Test Ruby**: `bundle exec rspec spec/path/to/file_spec.rb`
 - **Single Test**: `bundle exec rspec spec/path/to/file_spec.rb:LINE_NUMBER`
 - **Run Project**: `overmind start -f Procfile.dev`
@@ -42,35 +42,112 @@
 
 ## General Guidelines
 
-- MVP focus: Least code change, happy-path only
-- No unnecessary defensive programming
-- Ship the happy path first: limit guards/fallbacks to what production has proven necessary, then iterate
+- **Database foreign keys**: Prefer Rails associations and callbacks over database foreign-key constraints. Add a database foreign key only when there is a clear need and after checking deletion behavior and production migration/locking risks. Existing foreign keys alone are not a reason to add new ones.
+- **Migrations**: Create migrations with `bundle exec rails g migration <Name>` so the version is a real timestamp. Never hand-write or round the version (e.g. `20260925000000`); rounded versions collide across branches and break `db:migrate`.
+- **No custom SQL**: Write queries and data migrations in Ruby with ActiveRecord (`where`, `find_each`, `update!`). Do not use `execute`, SQL heredocs or raw SQL strings.
+- Prefer the smallest production-ready change that solves the current problem.
+- Build for the expected production path first. Do not add speculative guards, fallbacks, retries, or edge-case handling unless the caller can actually hit that case or production has proven it necessary.
+- Enforce eligibility and exclusivity rules at the earliest shared entry point. Do not repeat backup guards across downstream jobs, callbacks, services, or writes unless a proven independent path bypasses that point.
+- Validate request parameters at the controller or request boundary, reusing existing errors so invalid input returns `422 Unprocessable Entity` instead of reaching models or Sentry.
+- Accept only the documented type, shape, and value. Do not add compatibility coercions for malformed client values; fix official clients instead.
+- When an impossible or misconfigured state would indicate a setup/deployment bug, let it fail loudly instead of silently skipping behavior.
+- For locked/internal configs that must exist in production, prefer direct reads (`find`, `find_by!`, required hash keys) over silent fallbacks.
+- Do not add validation or response checks unless the code uses the result or the check changes behavior meaningfully.
+- Prefer existing repo dependencies/client libraries over hand-rolled protocol code for auth, signing, parsing, or API plumbing.
+- Avoid one-use private helpers unless they hide real complexity or make the main flow meaningfully easier to read.
 - Prefer minimal, readable code over elaborate abstractions; clarity beats cleverness
+- Optimize for human-readable, idiomatic Rails code. Prefer clear model methods, associations, scopes, and named route helpers over dense controller chains or manually assembled paths.
+- Keep record relationships, association traversal, and reusable database queries in models or model scopes. Return an ActiveRecord relation when callers need to filter or order the result.
+- Controllers should coordinate requests and prepare responses. Keep request-specific URL generation and presentation logic in controllers or view helpers. Before finalizing controller changes, check that relationship and traversal logic lives in the model layer.
 - Break down complex tasks into small, testable units
 - Iterate after confirmation
 - New features must include specs covering the main flows (happy path + critical edge cases). Bugfixes should add a regression spec when the fix is non-trivial. Skip specs only for purely cosmetic changes (CSS tweaks, copy adjustments, log message edits) or when the user explicitly asks to skip.
+- A spec must cover behavior that can actually break. Drop the ones that only restate the implementation or exist as documentation: a redundant spec costs CI time and gets rewritten with the code it mirrors.
+- A backend change usually has a frontend half, and the reverse. Check for the counterpart before calling the change done.
+- In specs, avoid custom helper methods for setup/data. Prefer `let` values and direct per-example setup; only add a helper when it removes meaningful repeated complexity.
 - Remove dead/unreachable/unused code
 - Don’t write multiple versions or backups for the same logic — pick the best approach and implement it
 - Prefer `with_modified_env` (from spec helpers) over stubbing `ENV` directly in specs
 - Specs in parallel/reloading environments: prefer comparing `error.class.name` over constant class equality when asserting raised errors
+- Specs tagged `:redis_streams` talk to a real Redis (the app's own pools are MockRedis in tests, which implements no stream, blocking or scripting command). They need `REDIS_URL` to point at a running server; CI already provides one.
 
-## Codex Worktree Workflow
+## Worktree Workflow
 
-- Use a separate git worktree + branch per task to keep changes isolated.
-- Keep Codex-specific local setup under `.codex/` and use `Procfile.worktree` for worktree process orchestration.
-- The setup workflow in `.codex/environments/environment.toml` should dynamically generate per-worktree DB/port values (Rails, Vite, Redis DB index) to avoid collisions.
-- Start each worktree with its own Overmind socket/title so multiple instances can run at the same time.
+Use a separate git worktree + branch per task so multiple instances run in parallel, fully isolated.
+
+A new worktree only materializes **versioned** files — `git worktree add` does NOT copy the gitignored, per-worktree setup: `.env`, `.env.test`, `Procfile.worktree`, `.bundle/config`, and `CLAUDE.local.md`. Generate these per worktree with non-colliding values:
+
+- **Ports**: distinct Rails (`PORT`) and Vite (`VITE_RUBY_PORT`).
+- **Postgres**: a dedicated `POSTGRES_DATABASE`, separate for dev and test — `.env.test` overrides it so specs never touch the dev DB (dotenv-rails loads `.env.test` before `.env` under `RAILS_ENV=test`).
+- **Redis**: a distinct logical DB index (dev and test) via `REDIS_URL`.
+- **Hostname**: a distinct `*.localhost` host in `FRONTEND_URL` (macOS resolves `*.localhost` natively) so session cookies don't clash between worktrees.
+- **Overmind**: its own `OVERMIND_SOCKET`; start with `overmind start -f Procfile.worktree`.
+
+Automate this with your worktree tool's create hook (e.g. worktrunk's `pre-start`): generate the local files from a shared master `.env`, derive the values above deterministically from the branch name, run `bundle install && pnpm install`, then create the DBs (`rails db:prepare` for dev; `RAILS_ENV=test rails db:create db:schema:load` for test). Keep DB setup non-fatal so a broken seed doesn't abort worktree creation. The actual per-worktree URL/port/DB/Redis values land in that worktree's `CLAUDE.local.md`.
 
 ## Release Notes
 
-- Every GitHub release cut from this repo must include the bilingual `user-notes` blocks (pt-BR + en) in the release body, written for non-technical end users.
-- Before running `gh release create`, `gh release edit`, the `release` skill from `fazer-ai-tools`, or any flow that touches a release body (including retroactive backfills), invoke the `release-notes` skill at `.claude/skills/release-notes/SKILL.md` to draft and validate the blocks.
+- Every GitHub release cut from this repo must include a `user-notes` block per shipped language (en, pt-BR, es) in the release body, written for non-technical end users.
+- Before running `gh release create`, `gh release edit`, the `release` skill from `fazer-ai-tools`, or any flow that touches a release body (including retroactive backfills), invoke the `release-user-notes` skill at `.claude/skills/release-user-notes/SKILL.md` to draft and validate the blocks.
+
+## Cutting a release
+
+**A published image comes from a cut release, and from nothing else.** The publish workflows fire on `release: [released]`, so cutting the release is what builds and pushes the image, including `:latest`. `workflow_dispatch` is there to validate the workflow itself with `-f push=false`; dispatching it with `push=true` is the one way to put an image in front of users without a release, and it must not be used for that, no matter how much faster it looks when you only want an image for a test. Need an image in production? Cut the release.
+
+The rest of this section exists because that rule was broken once, and the damage landed two days later.
+
+- **A tag can exist with no release attached, so never derive the next number from `gh release list`.** Ask the tags instead, and require an empty answer: `git ls-remote --tags <remote> "<tag>"`.
+- **`gh release create --target <sha>` silently ignores `--target` when the tag already exists.** The API documents `target_commitish` as unused in that case, so the command succeeds, prints the release URL, and attaches the release to whatever commit the old tag names. The publish workflow then builds that tree.
+- **Dereference the tag after cutting and compare it with what you aimed at**, before trusting anything built from it:
+
+  ```sh
+  git fetch <remote> "refs/tags/<tag>:refs/tags/<tag>" --force
+  git rev-parse "<tag>^{commit}"   # must equal the SHA passed to --target
+  ```
+
+- Measured on `v4.17.0-fazer-ai-pro.133`: on 2026-09-10 the tag was pushed and the publish dispatched with `-f push=true`, to get a Pro image for a live test without cutting a release. `gh release list` therefore still showed `.132` as the latest. On 09-12 the release for the merge of `v4.17.0-fazer-ai.113` was cut with that same number, `--target` was dropped on the floor, and the two-day-old tree shipped to production under the new number, with the new number stamped inside it.
 
 ## Commit Messages
 
 - Prefer Conventional Commits: `type(scope): subject` (scope optional)
 - Example: `feat(auth): add user authentication`
 - Don't reference Claude in commit messages
+
+## Git Remotes & PRs
+
+This repo is a fork of `chatwoot/chatwoot`. Remotes and their roles:
+
+- **origin** → `fazer-ai/chatwoot` (our CE fork). Feature/fix PRs from `main` target this repo.
+- **chatwoot-pro** → `fazer-ai/chatwoot-pro` (Pro fork). Its trunk is `main` there (`chatwoot-pro-main` is only the local branch name in the shared checkout), it receives CE work as a merge of CE's `main` and no PR of its own, and it carries the `vX.Y.Z-fazer-ai-pro.N` tags/releases. **Never open a PR on the Pro repo to port a change that is landing in CE** — see Pro repo gotchas.
+- **upstream** → `chatwoot/chatwoot` (Chatwoot OSS). Read-only / sync only (merge `develop` via the `sync-fork` skill). **Never open a PR against upstream.**
+
+⚠️ **`gh` fork gotcha:** because `origin` is a fork of `chatwoot/chatwoot`, `gh` resolves the PR base repo to the **parent (upstream)** when no default is set — so `gh pr create` silently opens the PR on `chatwoot/chatwoot`. Pin the base repo once per clone:
+
+```sh
+gh repo set-default fazer-ai/chatwoot   # writes remote.origin.gh-resolved=base
+```
+
+When unsure, be explicit: `gh pr create --repo fazer-ai/chatwoot` (for Pro PRs, `--repo fazer-ai/chatwoot-pro`).
+
+### Merge strategy
+
+- Default for every PR: `gh pr merge <n> --squash --admin`.
+- **Exception 1 — upstream sync PRs (`chore/merge-upstream-X.Y.Z`): merge with `--merge`, never `--squash`.** A squash drops the merge commit's second parent, so the upstream tag stops being an ancestor of `main`: GitHub reports `main` as permanently "N commits behind chatwoot:develop" (the count only grows), and the next sync bases on a stale tag and replays a whole version's diff as conflicts. After merging a sync PR, `git rev-list --count main..vX.Y.Z` must be 0 — when it isn't, see the `sync-fork` skill's **Repairing a squashed sync** recipe.
+- **Exception 2 — a PR whose branch Pro's trunk already contains: merge with `--merge`.** Same root cause pointing the other way. The squash lands a commit with no ancestry to the branch Pro already contains, so the next CE → Pro merge treats the whole delivery as new content and hands it back as conflicts. Measured on the i18n stack (#364/#365) on 2026-08-17: squash → 18 conflicting files in the CE → Pro sync, squash plus redoing the work on Pro → 8, merge commit → 0.
+- Before merging a delivery Pro already has, measure instead of guessing — in a throwaway worktree, run each candidate route as `git merge --no-commit --no-ff <ref>` and count `git diff --name-only --diff-filter=U`.
+- **Stacked PRs:** after the lower PR is squashed, the upper one needs `git rebase --onto origin/main <lower-branch> <upper-branch>` before it can merge. The squash leaves the upper PR's merge base at the original divergence point, so GitHub replays the lower PR's whole diff over the squash and conflicts even when the two trees are identical.
+
+### Pro repo gotchas
+
+- **A change reaches Pro through the CE → Pro sync, never through a port of its own.** No cherry-pick, no parallel PR opened on the Pro repo, however small the diff and however tempting the Pro-only CI is. Every CE delivery in Pro's history arrived as `Merge branch 'main' into <pro trunk>` (flow B of the `sync-fork` skill), and that merge is what makes the CE commit an ancestor of Pro. A cherry-picked copy is a second commit carrying the same diff with no ancestry, so the next sync replays those hunks and hands them back as conflicts: measured at 18 conflicting files on the i18n stack (#364/#365). "This also has to be in Pro" says where the change ends up, not that it is delivered twice.
+- **Pro's trunk is `main`.** The local branch in the shared checkout is conventionally called `chatwoot-pro-main` so it does not collide with CE's `main`, and the push is `git push chatwoot-pro HEAD:main`. Pushing that local branch **by name** is what created a stray remote `chatwoot-pro-main` in 2026-08, which then collected every push for a month while remote `main` went stale; that branch is gone and must not come back.
+- **Pro is where `spec/enterprise` runs in CI.** `run_ee_spec.yml` exists in Pro and not in CE, and it runs `spec/enterprise` on pull requests with the Pro overlay loaded. CE's `run_foss_spec.yml` deletes `enterprise` and `spec/enterprise` before its suite, so a change under `enterprise/` ships from CE with no CI evidence at all: run those specs locally before merging in CE, and let the Pro run after the sync be the workflow that measures them.
+
+## CI: the CE spec workflow
+
+- `run_foss_spec.yml` runs the whole suite on every push to `main` and on tags. On a branch, nothing runs until you dispatch it, and the dispatch default is **affected mode**: the specs the branch's diff against `main` maps to (`app/x/y.rb` and `lib/x/y.rb` to every `y_spec.rb`, plus the spec files themselves), in one shard per 40 files. Shared files (Gemfile, `config/` other than routes and locales, `spec/support`, the helpers, base classes, a modified factory) fall back to the full suite on their own.
+- `gh workflow run run_foss_spec.yml --ref <branch>` runs affected mode; add `-f full=true` for the whole suite (mandatory before merging an upstream sync, see the `sync-fork` skill) or `-f specs="spec/a_spec.rb spec/b_spec.rb"` for an explicit list. Affected mode is a pre-check, not the gate: the push to `main` runs everything.
+- Do not re-dispatch the full suite after every fix. Between 2026-08-12 and 2026-09-05 this workflow was dispatched 191 times by hand (23 on one branch), each run costing ~75 billed Blacksmith minutes; that is the whole reason the affected mode exists.
 
 ## PR Description Format
 
@@ -83,20 +160,28 @@
 
 ## Project-Specific
 
-- **Translations**:
-  - Update `en.yml`/`en.json` and `pt_BR.yml`/`pt_BR.json`
-  - Other languages are handled by the community
-  - Backend i18n → `.yml`, Frontend i18n → `.json`
+- **Translations**: the fork's strings live in their own tree, never inside upstream's locale files. See **Fork translations** below.
 - **Frontend**:
   - Use `components-next/` for message bubbles (the rest is being deprecated)
+- **Conversation ids: the dashboard knows a conversation by its `display_id`.** `Conversations::EventDataPresenter#push_data` sends `id: display_id`, so `allConversations[].id`, `currentChat.id`, the routes and every `/conversations/:id` endpoint use the display id. Other payloads that embed a conversation do not always follow that: the kanban task's `conversations[]` has the internal id in `id` next to `display_id`, and the WhatsApp `voice_call.*` events from `Call#broadcast_voice_call_event`, `Whatsapp::CallService` and `Whatsapp::CallPermissionReplyService` still send the internal id as `conversation_id` (nothing reads it there today; the ones from `Whatsapp::IncomingCallService`, which the call widget does read, carry the display id since #735). Before you match an embedded id against the store, a route or the API, read what the producer actually sends. And write the spec with an internal id that differs from the display id: with `{ id: 10 }` and nothing else, the wrong key passes. This is not hypothetical. In 2026-09 the kanban cable handlers matched on `conversations[].id` and put one clinic patient's card on another patient's conversation (fazer-ai/chatwoot-pro#90), and the specs that should have caught it used exactly such a payload.
 
 ## Ruby Best Practices
 
 - Use compact `module/class` definitions; avoid nested styles
 
+## Frontend Conventions
+
+- Prefer existing design-system utilities and shared composables.
+- Use typography utilities instead of manually recreating font styles.
+- Use logical Tailwind utilities (`ms`, `me`, `start`, `end`) for direction-aware layouts.
+- Use `rem` for arbitrary CSS dimensions; preserve native numeric values required by chart/SVG APIs.
+- Extract repeated or domain-specific strings, thresholds, colors, and durations into named constants.
+- Use shared request-cancellation utilities instead of local `AbortController` logic.
+
 ## Enterprise Edition Notes
 
 - Chatwoot has an Enterprise overlay under `enterprise/` that extends/overrides OSS code.
+- **Code under `enterprise/` does not run on CE installs.** The CE image workflow (`publish_github_docker.yml`) runs `rm -rf enterprise` before it builds, and premium features such as `channel_voice` stay off on the community pricing plan. In this fork, what turns them on is Pro's `fazer_ai/` hub layer, which sets the pricing plan. So a defect in `enterprise/` only shows up for Pro customers. The fix still lands here in CE, because the file is shared and Pro receives it through the sync. An issue about `enterprise/` code must say that it only affects Pro and which feature has to be on for it to happen, so nobody triages it as affecting every install.
 - When you add or modify core functionality, always check for corresponding files in `enterprise/` and keep behavior compatible.
 - Follow the Enterprise development practices documented here:
   - https://chatwoot.help/hc/handbook/articles/developing-enterprise-edition-features-38
@@ -112,14 +197,42 @@ Practical checklist for any change impacting core logic or public APIs
 - Tests: Add Enterprise-specific specs under `spec/enterprise`, mirroring OSS spec layout where applicable.
 - When modifying existing OSS features for Enterprise-only behavior, add an Enterprise module (via `prepend_mod_with`/`include_mod_with`) instead of editing OSS files directly—especially for policies, controllers, and services. For Enterprise-exclusive features, place code directly under `enterprise/`.
 
+## Fork translations
+
+Upstream's locale files are byte-identical to the Chatwoot release we track. **Never add or edit a key inside an upstream locale tree** — `app/javascript/dashboard/i18n/locale/`, `app/javascript/survey/i18n/locale/`, or `config/locales/<locale>.yml`. CI fails if you do, and the next upstream sync would conflict on every string we own.
+
+We ship our features in **en, pt_BR and es**, and every key must exist in all three: `check` fails when a key present in `en` is missing from another language we ship. Upstream keeps translating the other ~55 languages, and our keys fall back to `en` there. Everything the fork translates lives in two places:
+
+- Frontend, dashboard → `app/javascript/dashboard/i18n/fazer-ai/locale/<locale>/*.json`
+- Frontend, survey → `app/javascript/survey/i18n/fazer-ai/locale/<locale>.json` (one file, not a folder: it is a single small namespace)
+- Backend → `config/locales/fazer_ai.<locale>.yml` (and `fazer_ai.mailers.<locale>.yml` for the Chatwoot mailer copy upstream hardcodes in ERB)
+
+Each frontend bundle has its own upstream tree and its own overlay, merged by that bundle's `i18n/index.js`; the merging itself lives in `shared/helpers/forkTranslations`. `check`, `drift` and `scaffold` cover every tree listed in `FE_TREES`, so a new bundle means one entry there.
+
+Both are deep-merged on top of upstream's: the frontend in `i18n/index.js` via `withForkMessages`, the backend by Rails, which already loads every `config/locales/*.yml`. No registration step — files are picked up by directory scan, which is also why CE → Pro merges don't conflict here.
+
+**Which file does a key go in?**
+
+- A namespace that is entirely ours gets its own file: `kanban.json`, `internalChat.json`, `groups.json`, `scheduledMessages.json`, `fazerAi.json`.
+- A key we add *inside* an upstream namespace goes in a file named after the upstream file it extends: `INBOX_MGMT.ADD.WHATSAPP.*` → `fazer-ai/locale/en/inboxMgmt.json`.
+- Replacing an upstream string goes in `overrides.json`, and only there. Overrides apply per language: overriding in `en` does not change `es`, and they are exempt from the coverage rule, since fixing upstream's English says nothing about whether its Spanish needs fixing too.
+
+**Adding a language**: `ruby scripts/i18n/fork_translations.rb scaffold <locale>` copies the `en` tree as a starting point, so the new language starts complete (in English) and the coverage check stays green while you translate the values in place. The `en` fallback is still there (vue-i18n's `fallbackLocale`, `config.i18n.fallbacks` in production), but for the languages we ship it is a safety net, not a plan: leaving a key untranslated fails CI.
+
+**Checks**: `ruby scripts/i18n/fork_translations.rb check` enforces the boundaries and full coverage in every language present under `fazer-ai/locale/`. `drift` compares upstream's files against the tracked release and needs that tag fetched first. Both run in `.github/workflows/fazer_ai_i18n.yml`.
+
+**On upstream sync**: bump `UPSTREAM_BASE` in `scripts/i18n/fork_translations.rb` to the new release, then run `drift`. If it fails, upstream changed a file we also changed and the resolution belongs in our tree, not theirs.
+
 ## Branding / White-labeling note
 
+- The brand is always written `fazer.ai`, lowercase and with the dot. Never `Fazer.ai`, `FAZER.AI` or `fazer-ai` in prose, comments, or user-facing copy. The only exceptions are slugs where a dot is illegal (the `fazer-ai` GitHub org, the `@fazer-ai-pro` npm scope), env vars (`FAZER_AI_HUB_URL`), and code identifiers following the language's convention (`fazerAi`, `FazerAi`, `fazer_ai`).
 - For user-facing strings that currently contain "Chatwoot" but should adapt to branded/self-hosted installs, prefer applying `replaceInstallationName` from `shared/composables/useBranding` in the UI layer (for example tooltip and suggestion labels) instead of adding hardcoded brand-specific copy.
 
 ## Account-level toggles: do NOT extend `config/features.yml`
 
-- `Account#feature_flags` is a `bigint` driven by FlagShihTzu, with each YAML entry mapped to bit position `index` (0-based). Signed bigint can only hold bits 0..63. Adding a 65th entry produces values >= 2^64 that overflow the column on write and silently break high-bit features.
-- `chatwoot-pro-main` already inserts `kanban` and `internal_chat_pro` mid-list, pushing upstream features to bits 60+. After merging into Pro, any new flag added on `main` lands at an even higher bit, accelerating the overflow. The `Featurable.feature_flag_value` helper applies a two's-complement workaround that only fixes manual SQL queries (`feature_flags & ? != 0`); it does NOT fix the FlagShihTzu write path used by the superadmin form.
+- Since upstream 4.16.0, account feature flags are multi-column: `Featurable::FEATURE_FLAG_COLUMNS` maps `config/features.yml` entries to `accounts.feature_flags` (default) or `accounts.feature_flags_ext_1` via each entry's `column:` key, with a hard cap of 63 flags per bigint column enforced at boot (`validate_feature_count!` raises). The default column is FULL (63/63) — any new upstream-style flag MUST set `column: feature_flags_ext_1` and be appended at the end.
+- Bit positions are persisted per column: never reorder or remove existing entries, and never change an existing feature's `column` after release.
+- `chatwoot-pro-main` inserts `kanban` and `internal_chat_pro` mid-list in the DEFAULT column. With the 63-per-column boot validation, the next CE→Pro merge will raise `ArgumentError` at boot until Pro's extra flags move to `feature_flags_ext_1` — and moving them changes their persisted bit positions on Pro installs, so that migration must remap existing account values.
 - Local DB pitfall: bit positions differ between `main` and `chatwoot-pro-main` because of the kanban/internal_chat_pro insertion. The same bit set on one branch maps to a different feature on the other. Use separate dev DBs per branch or reset `feature_flags` when switching.
 
 For NEW account-level toggles, prefer the `settings` jsonb column instead of `feature_flags`:

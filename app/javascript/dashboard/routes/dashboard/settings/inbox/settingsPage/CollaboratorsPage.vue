@@ -15,6 +15,8 @@ import DropdownMenu from 'dashboard/components-next/dropdown-menu/DropdownMenu.v
 import Icon from 'dashboard/components-next/icon/Icon.vue';
 import TagInput from 'dashboard/components-next/taginput/TagInput.vue';
 import assignmentPoliciesAPI from 'dashboard/api/assignmentPolicies';
+import ReopenTeamAssigneeToggle from './ReopenTeamAssigneeToggle.vue';
+import ReopenOwnerSetting from './ReopenOwnerSetting.vue';
 import { useI18n } from 'vue-i18n';
 
 const props = defineProps({
@@ -33,6 +35,7 @@ const { isEnterprise } = useConfig();
 const selectedAgentIds = ref([]);
 const isAgentListUpdating = ref(false);
 const enableAutoAssignment = ref(false);
+const preventAssignmentTakeover = ref(false);
 const maxAssignmentLimit = ref(null);
 const assignmentPolicy = ref(null);
 const isLoadingPolicy = ref(false);
@@ -257,6 +260,24 @@ const handleToggleAutoAssignment = async val => {
     await store.dispatch('inboxes/updateInbox', payload);
     useAlert(t('INBOX_MGMT.EDIT.API.SUCCESS_MESSAGE'));
   } catch (error) {
+    // Defaults are only re-read when the inbox id changes, so a failed save
+    // would otherwise leave the switch showing a setting the server rejected.
+    enableAutoAssignment.value = props.inbox.enable_auto_assignment;
+    useAlert(t('INBOX_MGMT.EDIT.API.ERROR_MESSAGE'));
+  }
+};
+
+const handleTogglePreventTakeover = async val => {
+  preventAssignmentTakeover.value = val;
+  try {
+    await store.dispatch('inboxes/updateInbox', {
+      id: props.inbox.id,
+      formData: false,
+      prevent_assignment_takeover: val,
+    });
+    useAlert(t('INBOX_MGMT.EDIT.API.SUCCESS_MESSAGE'));
+  } catch (error) {
+    preventAssignmentTakeover.value = props.inbox.prevent_assignment_takeover;
     useAlert(t('INBOX_MGMT.EDIT.API.ERROR_MESSAGE'));
   }
 };
@@ -343,6 +364,7 @@ const deleteAssignmentPolicy = async () => {
 
 const setDefaults = () => {
   enableAutoAssignment.value = props.inbox.enable_auto_assignment;
+  preventAssignmentTakeover.value = props.inbox.prevent_assignment_takeover;
   maxAssignmentLimit.value =
     props.inbox.auto_assignment_config?.max_assignment_limit || null;
   fetchAttachedAgents();
@@ -527,7 +549,7 @@ onMounted(() => {
 
                     <DropdownMenu
                       v-if="showPolicyDropdown"
-                      class="top-full ltr:left-0 rtl:right-0 mt-2 max-w-64 max-h-72 overflow-y-auto"
+                      class="top-full ltr:left-0 rtl:right-0 mt-2 max-w-64 max-h-72"
                       :menu-items="policyMenuItems"
                       :is-searching="isLoadingPolicies"
                       @action="handlePolicyMenuAction"
@@ -666,6 +688,19 @@ onMounted(() => {
           </template>
         </template>
       </SettingsToggleSection>
+
+      <SettingsToggleSection
+        v-model="preventAssignmentTakeover"
+        compact
+        class="mt-4"
+        :header="$t('INBOX_MGMT.ASSIGNMENT.PREVENT_TAKEOVER')"
+        :description="$t('INBOX_MGMT.ASSIGNMENT.PREVENT_TAKEOVER_SUB_TEXT')"
+        @update:model-value="handleTogglePreventTakeover"
+      />
+
+      <ReopenTeamAssigneeToggle :inbox="inbox" class="mt-4" />
+
+      <ReopenOwnerSetting :inbox="inbox" class="mt-4" />
     </SettingsAccordion>
 
     <woot-modal

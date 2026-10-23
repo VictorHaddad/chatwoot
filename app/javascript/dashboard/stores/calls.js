@@ -1,6 +1,23 @@
-import { defineStore } from 'pinia';
 import TwilioVoiceClient from 'dashboard/api/channel/voice/twilioVoiceClient';
+import {
+  armOutboundRecorder,
+  cleanupWhatsappSession,
+  handleWhatsappRemoteEnd,
+  isLocalWhatsappCall,
+  takeEarlyOutboundEnd,
+  takeEarlyOutboundOutcome,
+} from 'dashboard/composables/useWhatsappCallSession';
+import { VOICE_CALL_PROVIDERS } from 'dashboard/helper/inbox';
 import { TERMINAL_STATUSES } from 'dashboard/helper/voice';
+import { defineStore } from 'pinia';
+
+const teardownByProvider = call => {
+  if (call?.provider === VOICE_CALL_PROVIDERS.WHATSAPP) {
+    cleanupWhatsappSession();
+  } else {
+    TwilioVoiceClient.endClientCall();
+  }
+};
 
 export const useCallsStore = defineStore('calls', {
   state: () => ({
@@ -16,26 +33,73 @@ export const useCallsStore = defineStore('calls', {
 
   actions: {
     handleCallStatusChanged({ callSid, status }) {
-      if (TERMINAL_STATUSES.includes(status)) {
-        this.removeCall(callSid);
+      if (!TERMINAL_STATUSES.includes(status)) return;
+
+      const call = this.calls.find(c => c.callSid === callSid);
+      // WhatsApp recordings live in the in-memory recorder until voice_call.ended
+      // uploads them; tearing down here would race-wipe those chunks.
+      if (call?.provider === 'whatsapp') {
+        this.calls = this.calls.filter(c => c.callSid !== callSid);
+        return;
       }
+
+      this.removeCall(callSid);
     },
 
     addCall(callData) {
       if (!callData?.callSid) return;
-      const exists = this.calls.some(call => call.callSid === callData.callSid);
-      if (exists) return;
+      const existing = this.calls.find(c => c.callSid === callData.callSid);
+      if (existing) {
+        // Merge so a later cable event with sdp_offer/provider/caller fills in
+        // gaps left by the earlier message.created path (and vice versa).
+        // Preserve a previously-captured caller snapshot when the incoming
+        // event has no sender info, otherwise the widget would flip to
+        // "Unknown caller" on the next status update.
+        const next = { ...callData };
+        if (existing.caller && !next.caller) delete next.caller;
+        Object.assign(existing, next, { isActive: existing.isActive });
+        // The message can add this tab's placed call before the tab does; an outcome kept
+        // for it is applied when the tab adds it all the same.
+        this.applyEarlyOutcome(callData);
+        return;
+      }
 
-      this.calls.push({
+      // Prepend so the newest call surfaces as the primary card (incomingCalls[0])
+      // and older calls drop into the stack below it.
+      this.calls.unshift({
         ...callData,
         isActive: false,
       });
+      this.applyEarlyOutcome(callData);
+    },
+
+    // A call this tab placed that was picked up, or ended, before the tab had it. Only this
+    // tab's own call: a sibling tab's, arriving here as a message, is not this tab's to
+    // start or to release.
+    //
+    // An end is applied to a call the tab no longer owns too: the end that tore down the
+    // session placing it can arrive before the dial's answer adds the call.
+    applyEarlyOutcome(callData) {
+      if (callData.provider !== VOICE_CALL_PROVIDERS.WHATSAPP) return;
+      const local = isLocalWhatsappCall(callData.callId);
+      const early = local
+        ? takeEarlyOutboundOutcome(callData.callId)
+        : takeEarlyOutboundEnd(callData.callId);
+      if (early === 'ended') {
+        this.calls = this.calls.filter(c => c.callSid !== callData.callSid);
+        // Through the call's own end, which uploads its recording first, and waits for an
+        // end of the same call already doing so.
+        if (local) handleWhatsappRemoteEnd(callData.callId);
+      } else if (early === 'accepted') {
+        this.setCallActive(callData.callSid);
+        armOutboundRecorder();
+      }
     },
 
     removeCall(callSid) {
       const callToRemove = this.calls.find(c => c.callSid === callSid);
       if (callToRemove?.isActive) {
-        TwilioVoiceClient.endClientCall();
+        teardownByProvider(callToRemove);
       }
       this.calls = this.calls.filter(c => c.callSid !== callSid);
     },
@@ -48,12 +112,28 @@ export const useCallsStore = defineStore('calls', {
     },
 
     clearActiveCall() {
-      TwilioVoiceClient.endClientCall();
+      const active = this.calls.find(c => c.isActive);
+      teardownByProvider(active);
       this.calls = this.calls.filter(call => !call.isActive);
     },
 
     dismissCall(callSid) {
       this.calls = this.calls.filter(call => call.callSid !== callSid);
+    },
+
+    removeCallsForConversation(conversationId) {
+      const callsToRemove = this.calls.filter(
+        call => call.conversationId === conversationId
+      );
+
+      // Tear down each active call via its own provider so a WhatsApp call
+      // gets cleanupWhatsappSession() (closes pc, stops recorder/mic) instead
+      // of the Twilio-only endClientCall() — otherwise mic stays open.
+      callsToRemove.filter(call => call.isActive).forEach(teardownByProvider);
+
+      this.calls = this.calls.filter(
+        call => call.conversationId !== conversationId
+      );
     },
   },
 });

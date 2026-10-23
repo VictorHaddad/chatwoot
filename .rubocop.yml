@@ -16,8 +16,16 @@ Layout/LineLength:
 Metrics/ClassLength:
   Max: 175
   Exclude:
+    - 'app/builders/messages/message_builder.rb'
     - 'app/models/message.rb'
     - 'app/models/conversation.rb'
+    - 'app/models/inbox.rb'
+    - 'config/initializers/rack_attack.rb'
+    # A flat adapter: one short method per command in the connector protocol, and its
+    # length is the size of that protocol rather than complexity anyone can factor out.
+    # Every command the contract adds costs a line here, so the limit is met by shaving
+    # something unrelated, which is the opposite of what the cop is for.
+    - 'app/services/whatsapp/session/backends/connector/backend.rb'
 
 Metrics/MethodLength:
   Max: 19
@@ -215,6 +223,20 @@ CustomCopLocation:
 
 Style/OneClassPerFile:
   Enabled: true
+  Exclude:
+    # The WhatsApp session layer groups its value objects by family (the event catalog,
+    # the command catalog, the content union, the error hierarchy). Each family is read
+    # and changed as one unit, and splitting ~40 eight-line Data classes across as many
+    # files would hide the catalog rather than clarify it.
+    - 'app/services/whatsapp/session/**/*'
+
+Style/DataInheritance:
+  Exclude:
+    # Same layer: its Data classes carry their own enums (KINDS, CONNECTIONS, ROLES...),
+    # and constants declared inside a `Data.define do ... end` block leak into the
+    # enclosing namespace instead of landing on the class, so the class form is the
+    # correct one here.
+    - 'app/services/whatsapp/session/**/*'
 
 AllCops:
   NewCops: enable
@@ -357,4 +379,5 @@ Rails/SaveBang:
     - Stripe::Customer
     - Stripe::Invoice
     - Stripe::InvoiceItem
+    - Shopify::PendingInstallation
     - FactoryBot

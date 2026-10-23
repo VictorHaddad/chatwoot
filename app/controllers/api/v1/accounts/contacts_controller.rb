@@ -1,11 +1,12 @@
-class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
+class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController # rubocop:disable Metrics/ClassLength
+  include GroupChannelResolver
   include Sift
   sort_on :email, type: :string
   sort_on :name, internal_name: :order_on_name, type: :scope, scope_params: [:direction]
   sort_on :phone_number, type: :string
   sort_on :last_activity_at, internal_name: :order_on_last_activity_at, type: :scope, scope_params: [:direction]
   sort_on :created_at, internal_name: :order_on_created_at, type: :scope, scope_params: [:direction]
-  sort_on :company, internal_name: :order_on_company_name, type: :scope, scope_params: [:direction]
+  sort_on :company_name, internal_name: :order_on_company_name, type: :scope, scope_params: [:direction]
   sort_on :city, internal_name: :order_on_city, type: :scope, scope_params: [:direction]
   sort_on :country, internal_name: :order_on_country_name, type: :scope, scope_params: [:direction]
 
@@ -82,27 +83,36 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
     @contact.save!
   end
 
+  # Through the inbox the caller named, so a group that is in two of them is refreshed on
+  # the one the agent is looking at rather than on whichever came first, which can be a
+  # session that is not even connected.
   def sync_group
     authorize @contact, :sync_group?
     raise ActionController::BadRequest, I18n.t('contacts.sync_group.not_a_group') if @contact.group_type_individual?
     raise ActionController::BadRequest, I18n.t('contacts.sync_group.no_identifier') if @contact.identifier.blank?
 
-    Contacts::SyncGroupJob.perform_later(@contact)
+    Contacts::SyncGroupJob.perform_later(@contact, channel: channel)
     head :accepted
   end
 
   def create
     ActiveRecord::Base.transaction do
-      @contact = Current.account.contacts.new(permitted_params.except(:avatar_url))
+      @contact = Current.account.contacts.new(permitted_params.except(:avatar_url).merge(contact_type: :lead))
       @contact.save!
       @contact_inbox = build_contact_inbox
+      # Baileys phone normalization in the builder may merge @contact into an
+      # existing contact with the canonical phone; switch to the surviving record.
+      @contact = @contact_inbox.contact if @contact_inbox&.contact.present?
       process_avatar_from_url
     end
   end
 
   def update
-    @contact.assign_attributes(contact_update_params)
-    @contact.save!
+    ActiveRecord::Base.transaction do
+      @contact.assign_attributes(contact_update_params)
+      Contacts::CompanyAssociationService.new.associate_company_from_name(@contact) if params[:resolve_legacy_company].to_s == 'true'
+      @contact.save!
+    end
     process_avatar_from_url
   end
 
@@ -175,12 +185,18 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
     ContactInboxBuilder.new(
       contact: @contact,
       inbox: inbox,
-      source_id: params[:source_id]
+      source_id: params[:source_id],
+      validate_whatsapp_phone: true
     ).perform
   end
 
   def permitted_params
-    params.permit(:name, :identifier, :email, :phone_number, :avatar, :blocked, :avatar_url, additional_attributes: {}, custom_attributes: {})
+    permitted_params = params.permit(:name, :identifier, :email, :phone_number, :avatar, :avatar_url, :blocked,
+                                     additional_attributes: {}, custom_attributes: {})
+    return permitted_params unless Current.account.feature_enabled?('companies') && params.key?(:company_id)
+
+    company_id = params[:company_id]
+    permitted_params.merge(company_id: company_id.present? ? Current.account.companies.find(company_id).id : nil)
   end
 
   def contact_custom_attributes
@@ -223,3 +239,5 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
     render json: error, status: error_status
   end
 end
+
+Api::V1::Accounts::ContactsController.prepend_mod_with('Api::V1::Accounts::ContactsController')

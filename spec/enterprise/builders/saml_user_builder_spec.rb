@@ -122,8 +122,8 @@ RSpec.describe SamlUserBuilder do
         it 'does not add the user to the target account' do
           expect do
             builder.perform
-          rescue SamlUserBuilder::AuthenticationFailed
-            nil
+          rescue StandardError => e
+            raise unless e.class.name == 'SamlUserBuilder::AuthenticationFailed' # rubocop:disable Style/ClassEqualityComparison
           end.not_to change(AccountUser, :count)
           expect(existing_user.reload.accounts).not_to include(account)
         end
@@ -131,8 +131,8 @@ RSpec.describe SamlUserBuilder do
         it 'does not convert the user provider to saml' do
           expect do
             builder.perform
-          rescue SamlUserBuilder::AuthenticationFailed
-            nil
+          rescue StandardError => e
+            raise unless e.class.name == 'SamlUserBuilder::AuthenticationFailed' # rubocop:disable Style/ClassEqualityComparison
           end.not_to(change { existing_user.reload.provider })
         end
       end
@@ -218,10 +218,18 @@ RSpec.describe SamlUserBuilder do
 
         before { saml_settings }
 
-        it 'applies custom role based on SAML groups' do
+        it 'applies custom role based on SAML groups when the custom_roles feature is enabled' do
+          account.enable_features!('custom_roles')
+
           user = builder.perform
           account_user = AccountUser.find_by(user: user, account: account)
           expect(account_user.custom_role_id).to eq(custom_role.id)
+        end
+
+        it 'ignores the custom role mapping when the custom_roles feature is disabled' do
+          user = builder.perform
+          account_user = AccountUser.find_by(user: user, account: account)
+          expect(account_user.custom_role_id).to be_nil
         end
       end
 
@@ -275,16 +283,32 @@ RSpec.describe SamlUserBuilder do
       end
     end
 
-    context 'when there are errors' do
-      it 'returns unsaved user object when user creation fails' do
-        allow(User).to receive(:create).and_return(User.new(email: email))
-        user = builder.perform
-        expect(user.persisted?).to be false
+    # `create_user` saves with `User.create!`, so a record Rails refuses raises instead of
+    # coming back unsaved. Reported as a rejected assertion, which is what it is; the
+    # controller answers that with the ordinary login error.
+    context 'when the user cannot be created' do
+      before { allow(User).to receive(:create!).and_raise(ActiveRecord::RecordInvalid.new(User.new)) }
+
+      it 'reports a failed authentication instead of returning an unsaved user' do
+        expect { builder.perform }.to raise_error(described_class::AuthenticationFailed)
       end
 
-      it 'does not create account association for failed user' do
-        allow(User).to receive(:create).and_return(User.new(email: email))
-        expect { builder.perform }.not_to change(AccountUser, :count)
+      it 'does not create an account association' do
+        expect do
+          expect { builder.perform }.to raise_error(described_class::AuthenticationFailed)
+        end.not_to change(AccountUser, :count)
+      end
+    end
+
+    # The mirror of the above, and the reason the rescue sits on `create_user` rather than
+    # around the whole builder: a failure here is ours, not the IdP's, and it happens after
+    # the user has already been committed. Answering it with a login error would hide a
+    # broken role mapping or a failing callback behind "authentication failed".
+    context 'when adding the user to the account fails' do
+      it 'lets the failure through instead of reporting a failed authentication' do
+        allow(AccountUser).to receive(:find_or_create_by!).and_raise(ActiveRecord::RecordInvalid.new(AccountUser.new))
+
+        expect { builder.perform }.to raise_error(ActiveRecord::RecordInvalid)
       end
     end
   end

@@ -18,6 +18,8 @@ RSpec.describe 'Enterprise SAML OmniAuth Callbacks', type: :request do
 
   before do
     allow(ChatwootApp).to receive(:enterprise?).and_return(true)
+    allow(GlobalConfigService).to receive(:load).and_call_original
+    allow(GlobalConfigService).to receive(:load).with('FRONTEND_URL', 'http://localhost:3000').and_return('http://www.example.com')
     account.enable_features!('saml')
     saml_settings
   end
@@ -29,11 +31,6 @@ RSpec.describe 'Enterprise SAML OmniAuth Callbacks', type: :request do
 
         get "/omniauth/saml/callback?account_id=#{account.id}"
 
-        # expect a 302 redirect to auth/saml/callback
-        expect(response).to redirect_to('http://www.example.com/auth/saml/callback')
-        follow_redirect!
-
-        # expect redirect to login with SSO token
         expect(response).to redirect_to(%r{/app/login\?email=.+&sso_auth_token=.+$})
 
         # verify user was created
@@ -50,11 +47,43 @@ RSpec.describe 'Enterprise SAML OmniAuth Callbacks', type: :request do
 
         get "/omniauth/saml/callback?account_id=#{account.id}"
 
-        # expect a 302 redirect to auth/saml/callback
-        expect(response).to redirect_to('http://www.example.com/auth/saml/callback')
-        follow_redirect!
-
         expect(response).to redirect_to(%r{/app/login\?email=.+&sso_auth_token=.+$})
+      end
+    end
+
+    it 'returns a pending Shopify install redirect to the login flow' do
+      with_modified_env FRONTEND_URL: 'http://www.example.com' do
+        create(:user, email: 'billing@example.com', account: account)
+        set_saml_config('billing@example.com')
+        redirect_url = "settings/integrations/shopify?shopify_pending_install=#{'a' * 32}"
+
+        get '/omniauth/saml/callback', params: { account_id: account.id, RelayState: redirect_url }
+
+        query = URI.decode_www_form(URI.parse(response.location).query).to_h
+        expect(query['redirect_url']).to eq(redirect_url)
+        expect(query).to include('email', 'sso_auth_token')
+      end
+    end
+
+    it 'redirects mobile SAML login to the mobile deep link' do
+      with_modified_env FRONTEND_URL: 'http://www.example.com' do
+        create(:user, email: 'mobile@example.com', account: account)
+        set_saml_config('mobile@example.com')
+
+        get "/omniauth/saml/callback?account_id=#{account.id}&RelayState=mobile"
+
+        expect(response).to redirect_to(%r{\Achatwootapp://auth/saml\?email=.+&sso_auth_token=.+\z})
+      end
+    end
+
+    it 'redirects to the login error when the assertion cannot produce a valid user' do
+      with_modified_env FRONTEND_URL: 'http://www.example.com' do
+        set_saml_config('broken@example.com')
+        allow(User).to receive(:create!).and_raise(ActiveRecord::RecordInvalid.new(User.new))
+
+        get "/omniauth/saml/callback?account_id=#{account.id}"
+
+        expect(response).to redirect_to("http://www.example.com/app/login?error=saml-authentication-failed&sso_account_id=#{account.id}")
       end
     end
 
@@ -66,10 +95,7 @@ RSpec.describe 'Enterprise SAML OmniAuth Callbacks', type: :request do
 
         get "/omniauth/saml/callback?account_id=#{account.id}"
 
-        expect(response).to redirect_to('http://www.example.com/auth/saml/callback')
-        follow_redirect!
-
-        expect(response).to redirect_to('http://www.example.com/app/login?error=saml-authentication-failed')
+        expect(response).to redirect_to("http://www.example.com/app/login?error=saml-authentication-failed&sso_account_id=#{account.id}")
         expect(existing_user.reload.provider).to eq('email')
         expect(existing_user.accounts).not_to include(account)
       end

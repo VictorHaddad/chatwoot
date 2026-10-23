@@ -1,3 +1,4 @@
+import { withForkMessages } from './fazer-ai';
 import ar from './locale/ar';
 import bg from './locale/bg';
 import ca from './locale/ca';
@@ -7,6 +8,7 @@ import de from './locale/de';
 import el from './locale/el';
 import en from './locale/en';
 import es from './locale/es';
+import et from './locale/et';
 import fa from './locale/fa';
 import fi from './locale/fi';
 import fr from './locale/fr';
@@ -27,19 +29,21 @@ import pt_BR from './locale/pt_BR';
 import ro from './locale/ro';
 import ru from './locale/ru';
 import sk from './locale/sk';
+import sl from './locale/sl';
 import sr from './locale/sr';
 import sv from './locale/sv';
 import ta from './locale/ta';
 import th from './locale/th';
 import tr from './locale/tr';
 import uk from './locale/uk';
+import uz from './locale/uz';
 import vi from './locale/vi';
 import zh_CN from './locale/zh_CN';
 import zh_TW from './locale/zh_TW';
 import is from './locale/is';
 import lt from './locale/lt';
 
-export default {
+export default withForkMessages({
   ar,
   bg,
   ca,
@@ -49,6 +53,7 @@ export default {
   el,
   en,
   es,
+  et,
   fa,
   fi,
   fr,
@@ -69,15 +74,17 @@ export default {
   ro,
   ru,
   sk,
+  sl,
   sr,
   sv,
   ta,
   th,
   tr,
   uk,
+  uz,
   vi,
   zh_CN,
   zh_TW,
   is,
   lt,
-};
+});

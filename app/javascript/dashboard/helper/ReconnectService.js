@@ -4,15 +4,9 @@ import { differenceInSeconds } from 'date-fns';
 import {
   isAConversationRoute,
   isAInboxViewRoute,
-  isNotificationRoute,
 } from 'dashboard/helper/routeHelpers';
 
 const MAX_DISCONNECT_SECONDS = 10800;
-
-// The disconnect delay threshold is added to account for delays in identifying
-// disconnections (for example, the websocket disconnection takes up to 3 seconds)
-// while fetching the latest updated conversations or messages.
-const DISCONNECT_DELAY_THRESHOLD = 15;
 
 class ReconnectService {
   constructor(store, router) {
@@ -51,22 +45,29 @@ class ReconnectService {
 
   fetchConversations = async () => {
     await this.store.dispatch('updateChatListFilters', {
-      page: null,
-      updatedWithin:
-        this.getSecondsSinceDisconnect() + DISCONNECT_DELAY_THRESHOLD,
-    });
-    await this.store.dispatch('fetchAllConversations');
-    // Reset the updatedWithin in the store chat list filter after fetching conversations when the user is reconnected
-    await this.store.dispatch('updateChatListFilters', {
+      page: 1,
       updatedWithin: null,
+    });
+    // Page 1 REPLACES the list rather than merging into it. The merge only ever adds or replaces,
+    // so a conversation that left this tab while the socket was down would otherwise keep its
+    // stale copy on screen; replacing is what takes it off.
+    await this.store.dispatch('fetchAllConversations', {
+      replaceExisting: true,
     });
   };
 
+  // The store action applies the agent's sort itself, so page 1 here is page 1 of what they are
+  // looking at, and `replaceExisting` swaps the list for it instead of merging a stale one.
   fetchFilteredOrSavedConversations = async queryData => {
-    await this.store.dispatch('fetchFilteredConversations', {
-      queryData,
-      page: 1,
-    });
+    try {
+      await this.store.dispatch('fetchFilteredConversations', {
+        queryData,
+        page: 1,
+        replaceExisting: true,
+      });
+    } catch (error) {
+      // Ignore error, reconnect flow should continue
+    }
   };
 
   fetchConversationsOnReconnect = async () => {
@@ -84,10 +85,11 @@ class ReconnectService {
     }
   };
 
-  fetchConversationMessagesOnReconnect = async () => {
+  refreshActiveConversationOnReconnect = async () => {
     const { conversation_id: conversationId } =
       this.router.currentRoute.value.params;
     if (conversationId) {
+      await this.store.dispatch('getConversation', Number(conversationId));
       await this.store.dispatch('syncActiveConversationMessages', {
         conversationId: Number(conversationId),
       });
@@ -113,13 +115,11 @@ class ReconnectService {
     const currentRoute = this.router.currentRoute.value.name;
     if (isAConversationRoute(currentRoute, true)) {
       await this.fetchConversationsOnReconnect();
-      await this.fetchConversationMessagesOnReconnect();
+      await this.refreshActiveConversationOnReconnect();
     } else if (isAInboxViewRoute(currentRoute, true)) {
       await this.fetchNotificationsOnReconnect(
         this.store.getters['notifications/getNotificationFilters']
       );
-    } else if (isNotificationRoute(currentRoute)) {
-      await this.fetchNotificationsOnReconnect();
     }
   };
 
@@ -139,8 +139,13 @@ class ReconnectService {
   };
 
   onReconnect = async () => {
+    // A billing change while the cable was down loses its account.billing_updated
+    // broadcast, and the focus listener never fires if the tab stayed focused.
+    await this.store.dispatch('accounts/get', { silent: true });
     await this.handleRouteSpecificFetch();
     await this.revalidateCaches();
+    // Pin events that fired while the socket was down are lost, so the map is rebuilt from the server.
+    await this.store.dispatch('conversationPins/fetch');
     emitter.emit(BUS_EVENTS.WEBSOCKET_RECONNECT_COMPLETED);
   };
 }

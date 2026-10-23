@@ -17,6 +17,7 @@
 class Channel::Instagram < ApplicationRecord
   include Channelable
   include Reauthorizable
+  include Instagram::RequestOptions
   self.table_name = 'channel_instagram'
 
   # TODO: Remove guard once encryption keys become mandatory (target 3-4 releases out).
@@ -44,32 +45,69 @@ class Channel::Instagram < ApplicationRecord
 
   def subscribe
     # ref https://developers.facebook.com/docs/instagram-platform/webhooks#enable-subscriptions
-    HTTParty.post(
-      "https://graph.instagram.com/v22.0/#{instagram_id}/subscribed_apps",
+    response = HTTParty.post(
+      "#{base_uri}/#{instagram_id}/subscribed_apps",
       query: {
         subscribed_fields: %w[messages message_reactions messaging_seen],
         access_token: access_token
-      }
+      },
+      **INSTAGRAM_SHORT_REQUEST_OPTIONS
     )
+    return true if response.success?
+
+    subscription_failed("Instagram answered #{response.code}")
   rescue StandardError => e
-    Rails.logger.debug { "Rescued: #{e.inspect}" }
-    true
+    subscription_failed("the request did not complete: #{e.class}")
   end
 
+  # An inbox that did not subscribe exists and receives nothing, and it used to say so
+  # nowhere: the answer was never read, every failure answered `true`, and the only trace
+  # was a `debug` line. The operator saw a working inbox and no messages.
+  #
+  # There is no third state worth reporting here. Instagram refusing and Instagram not
+  # answering leave the same inbox in the same condition, and they have the same remedy,
+  # which is the one the reauthorization banner already asks for: reconnect, which runs
+  # this again. `authorization_error!` rather than `prompt_reauthorization!` so the
+  # channel's own threshold decides, which for this channel is one.
+  def subscription_failed(reason)
+    Rails.logger.error("[INSTAGRAM] inbox #{inbox&.id} did not subscribe to webhooks, so it will receive nothing: #{reason}")
+    authorization_error!
+    false
+  end
+
+  # Failing to unsubscribe must not stop the channel from being removed: the operator
+  # asked for it to go, and Instagram's copy of the subscription is not ours to hold it
+  # hostage. But it cannot be silent either, because we go on receiving webhooks for an
+  # inbox that no longer exists, and the only way anyone finds out is by reading logs.
   def unsubscribe
-    HTTParty.delete(
-      "https://graph.instagram.com/v22.0/#{instagram_id}/subscribed_apps",
+    response = HTTParty.delete(
+      "#{base_uri}/#{instagram_id}/subscribed_apps",
       query: {
         access_token: access_token
-      }
+      },
+      **INSTAGRAM_SHORT_REQUEST_OPTIONS
     )
-    true
+    return true if response.success?
+
+    log_unsubscribe_failure("Instagram answered #{response.code}")
   rescue StandardError => e
-    Rails.logger.debug { "Rescued: #{e.inspect}" }
+    log_unsubscribe_failure("the request did not complete: #{e.class}")
+  end
+
+  def log_unsubscribe_failure(reason)
+    Rails.logger.error(
+      "[INSTAGRAM] account #{account_id} removed instagram id #{instagram_id} and it is still subscribed there: #{reason}"
+    )
     true
   end
 
   def access_token
     Instagram::RefreshOauthTokenService.new(channel: self).access_token
+  end
+
+  private
+
+  def base_uri
+    "https://graph.instagram.com/#{GlobalConfigService.load('INSTAGRAM_API_VERSION', 'v22.0')}"
   end
 end

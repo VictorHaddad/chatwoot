@@ -39,14 +39,40 @@ RSpec.describe 'Conversation Message Reactions API', type: :request do
       end
     end
 
-    context 'when the target message is private' do
-      let(:target_message) { create(:message, account: account, conversation: conversation, content: 'Note', private: true) }
+    context 'when the target message is a private note' do
+      let!(:target_message) { create(:message, account: account, conversation: conversation, content: 'Note', private: true) }
 
-      it 'rejects the request' do
-        post reactions_url, params: { emoji: '👍' }, headers: agent.create_new_auth_token, as: :json
+      it 'allows the reaction and creates a private reaction Message' do
+        expect do
+          post reactions_url, params: { emoji: '👍' }, headers: agent.create_new_auth_token, as: :json
+        end.to change(conversation.messages, :count).by(1)
 
-        expect(response).to have_http_status(:unprocessable_entity)
-        expect(response.parsed_body['error']).to match(/private/i)
+        expect(response).to have_http_status(:ok)
+        created = conversation.messages.last
+        expect(created.private).to be true
+        expect(created.content).to eq('👍')
+        expect(created.content_attributes['is_reaction']).to be true
+        expect(created.content_attributes['in_reply_to']).to eq(target_message.id)
+      end
+
+      context 'when the inbox channel does not support reactions' do
+        let(:channel) { create(:channel_whatsapp, account: account, provider: 'default', validate_provider_config: false, sync_templates: false) }
+
+        it 'still allows reacting to the private note' do
+          post reactions_url, params: { emoji: '👍' }, headers: agent.create_new_auth_token, as: :json
+
+          expect(response).to have_http_status(:ok)
+        end
+      end
+
+      it 'does not dispatch the reaction to the external provider' do
+        expect_any_instance_of(Whatsapp::Providers::WhatsappBaileysService).not_to receive(:send_message) # rubocop:disable RSpec/AnyInstance
+
+        perform_enqueued_jobs do
+          post reactions_url, params: { emoji: '👍' }, headers: agent.create_new_auth_token, as: :json
+        end
+
+        expect(response).to have_http_status(:ok)
       end
     end
 
@@ -138,6 +164,16 @@ RSpec.describe 'Conversation Message Reactions API', type: :request do
         expect(existing.content).to eq('❤️')
         expect(existing.content_attributes['deleted']).to be_nil.or(be(false))
         expect(existing.source_id).to be_nil
+      end
+
+      # The row is about to be sent again, so it must not reuse the WhatsApp id reserved for the
+      # previous reaction — the resend would be seen as that same message.
+      it 'drops the reserved provider id so the resend gets a fresh one' do
+        existing.update!(content_attributes: existing.content_attributes.merge('pending_source_id' => 'RESERVED_1'))
+
+        post reactions_url, params: { emoji: '❤️' }, headers: agent.create_new_auth_token, as: :json
+
+        expect(existing.reload.content_attributes['pending_source_id']).to be_nil
       end
 
       it 'enqueues SendReplyJob with the existing message id when toggling off' do

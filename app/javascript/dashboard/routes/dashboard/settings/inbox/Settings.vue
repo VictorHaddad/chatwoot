@@ -4,6 +4,8 @@ import { shouldBeUrl } from 'shared/helpers/Validators';
 import { useAlert } from 'dashboard/composables';
 import { useVuelidate } from '@vuelidate/core';
 import Avatar from 'next/avatar/Avatar.vue';
+import Banner from 'dashboard/components-next/banner/Banner.vue';
+import Icon from 'dashboard/components-next/icon/Icon.vue';
 import SettingIntroBanner from 'dashboard/components/widgets/SettingIntroBanner.vue';
 import SettingsToggleSection from 'dashboard/components-next/Settings/SettingsToggleSection.vue';
 import SettingsFieldSection from 'dashboard/components-next/Settings/SettingsFieldSection.vue';
@@ -21,18 +23,31 @@ import PreChatFormSettings from './PreChatForm/Settings.vue';
 import WeeklyAvailability from './components/WeeklyAvailability.vue';
 import GreetingsEditor from 'shared/components/GreetingsEditor.vue';
 import ConfigurationPage from './settingsPage/ConfigurationPage.vue';
+import VoiceConfigurationPage from './settingsPage/VoiceConfigurationPage.vue';
+import WhatsappCallingPage from './settingsPage/WhatsappCallingPage.vue';
 import CustomerSatisfactionPage from './settingsPage/CustomerSatisfactionPage.vue';
 import CollaboratorsPage from './settingsPage/CollaboratorsPage.vue';
 import BotConfiguration from './components/BotConfiguration.vue';
 import AccountHealth from './components/AccountHealth.vue';
+import TwilioHealth from './components/TwilioHealth.vue';
+import WhatsappManualMigrationDialog from './components/WhatsappManualMigrationDialog.vue';
+import WhatsappManualMigrationBanner from './components/WhatsappManualMigrationBanner.vue';
+import WhatsappLegacyProviderBanner from './components/WhatsappLegacyProviderBanner.vue';
+import WhatsappLinkDeviceModal from './components/WhatsappLinkDeviceModal.vue';
+import { isProviderOffline } from 'dashboard/helper/whatsapp';
+import { consumePairingRequest } from 'dashboard/helper/whatsappPairingRequest';
+import { useWhatsappSessionProviders } from 'dashboard/composables/useWhatsappSessionProviders';
 import { FEATURE_FLAGS } from '../../../../featureFlags';
 import SenderNameExamplePreview from './components/SenderNameExamplePreview.vue';
 import LockToSingleConversationPreview from './components/LockToSingleConversationPreview.vue';
 import NextButton from 'dashboard/components-next/button/Button.vue';
 import SpinnerLoader from 'dashboard/components-next/spinner/Spinner.vue';
 import ConvertInboxModal from 'dashboard/components/widgets/modal/ConvertInboxModal.vue';
-import { INBOX_TYPES } from 'dashboard/helper/inbox';
-import { getInboxIconByType } from 'dashboard/helper/inbox';
+import {
+  getInboxIconByType,
+  getInboxIdentifier,
+  INBOX_TYPES,
+} from 'dashboard/helper/inbox';
 import { LOCAL_STORAGE_KEYS } from 'dashboard/constants/localStorage';
 import { LocalStorage } from 'shared/helpers/localStorage';
 import Editor from 'dashboard/components-next/Editor/Editor.vue';
@@ -41,12 +56,17 @@ import SelectInput from 'dashboard/components-next/select/Select.vue';
 import Widget from 'dashboard/modules/widget-preview/components/Widget.vue';
 import AccessToken from 'dashboard/routes/dashboard/settings/profile/AccessToken.vue';
 import { copyTextToClipboard } from 'shared/helpers/clipboard';
+import { META_RESTRICTION_STATUS_URL } from 'dashboard/constants/globals';
+import { CAPABILITIES } from 'dashboard/helper/whatsappSession';
 
 export default {
   components: {
+    Banner,
     BotConfiguration,
     CollaboratorsPage,
     ConfigurationPage,
+    VoiceConfigurationPage,
+    WhatsappCallingPage,
     CustomerSatisfactionPage,
     FacebookReauthorize,
     GreetingsEditor,
@@ -72,12 +92,25 @@ export default {
     ColorPicker,
     SelectInput,
     AccountHealth,
+    TwilioHealth,
+    WhatsappManualMigrationDialog,
+    WhatsappManualMigrationBanner,
+    WhatsappLegacyProviderBanner,
+    WhatsappLinkDeviceModal,
     Widget,
     AccessToken,
+    Icon,
   },
   mixins: [inboxMixin],
   setup() {
-    return { v$: useVuelidate() };
+    const { descriptorFor, creatableProviders, fetchProviders } =
+      useWhatsappSessionProviders();
+    return {
+      v$: useVuelidate(),
+      descriptorFor,
+      creatableProviders,
+      fetchWhatsappSessionProviders: fetchProviders,
+    };
   },
   data() {
     return {
@@ -105,24 +138,60 @@ export default {
       isLoadingHealth: false,
       healthError: null,
       isRegisteringWebhook: false,
+      isTransferringWhatsAppToManual: false,
       widgetBubblePosition: 'right',
       widgetBubbleType: 'standard',
       widgetBubbleLauncherTitle: '',
       showConvertGate: false,
+      // Set when the conversion was asked for from the legacy banner, which names its target.
+      convertTarget: null,
+      showLinkDeviceModal: false,
     };
   },
   computed: {
     ...mapGetters({
       accountId: 'getCurrentAccountId',
       isFeatureEnabledonAccount: 'accounts/isFeatureEnabledonAccount',
+      isOnChatwootCloud: 'globalConfig/isOnChatwootCloud',
+      isMetaMessageSendingDisabled: 'globalConfig/isMetaMessageSendingDisabled',
       uiFlags: 'inboxes/getUIFlags',
       portals: 'portals/allPortals',
     }),
+    isInboundEmailEnabled() {
+      return this.isFeatureEnabledonAccount(
+        this.accountId,
+        FEATURE_FLAGS.INBOUND_EMAILS
+      );
+    },
+    showContinuityToggle() {
+      if (this.isInboundEmailEnabled) return true;
+      return this.isOnChatwootCloud;
+    },
+    isContinuityDisabled() {
+      return this.isOnChatwootCloud && !this.isInboundEmailEnabled;
+    },
+    continuityDescription() {
+      if (this.isContinuityDisabled) {
+        return this.$t(
+          'INBOX_MGMT.SETTINGS_POPUP.ENABLE_CONTINUITY_VIA_EMAIL_DISABLED_TEXT'
+        );
+      }
+      return this.$t(
+        'INBOX_MGMT.SETTINGS_POPUP.ENABLE_CONTINUITY_VIA_EMAIL_SUB_TEXT'
+      );
+    },
     selectedTabKey() {
       return this.tabs[this.selectedTabIndex]?.key;
     },
+    // AccountHealth renders the structured provider error; TwilioHealth only needs the message.
+    healthErrorMessage() {
+      return this.healthError?.message || '';
+    },
     shouldShowWhatsAppConfiguration() {
       return this.isAWhatsAppCloudChannel;
+    },
+    shouldShowTwilioHealth() {
+      return this.isATwilioChannel && this.inbox.medium === 'sms';
     },
     whatsAppAPIProviderName() {
       if (this.isAWhatsAppCloudChannel) {
@@ -140,13 +209,28 @@ export default {
       if (this.isAWhatsAppZapiChannel) {
         return this.$t('INBOX_MGMT.ADD.WHATSAPP.PROVIDERS.ZAPI');
       }
+      if (this.isASessionWhatsAppChannel) {
+        return this.$t(
+          `INBOX_MGMT.ADD.WHATSAPP.PROVIDERS.${this.whatsAppAPIProvider.toUpperCase()}`
+        );
+      }
       return '';
+    },
+    // The catalog says which providers are legacy, and whether this account can pick the
+    // native one; Baileys and Z-API are the legacy ones today.
+    isLegacyWhatsAppProvider() {
+      return (
+        this.isAWhatsAppChannel &&
+        Boolean(this.descriptorFor(this.whatsAppAPIProvider)?.legacy)
+      );
+    },
+    isNativeWhatsAppAvailable() {
+      return this.creatableProviders.some(({ key }) => key === 'native');
     },
     isConvertibleWhatsAppChannel() {
       return (
         this.isAWhatsAppCloudChannel ||
-        this.isAWhatsAppBaileysChannel ||
-        this.isAWhatsAppZapiChannel ||
+        this.isASessionWhatsAppChannel ||
         this.is360DialogWhatsAppChannel
       );
     },
@@ -162,19 +246,17 @@ export default {
         },
       ];
 
-      if (!this.isAVoiceChannel) {
-        visibleToAllChannelTabs = [
-          ...visibleToAllChannelTabs,
-          {
-            key: 'business-hours',
-            name: this.$t('INBOX_MGMT.TABS.BUSINESS_HOURS'),
-          },
-          {
-            key: 'csat',
-            name: this.$t('INBOX_MGMT.TABS.CSAT'),
-          },
-        ];
-      }
+      visibleToAllChannelTabs = [
+        ...visibleToAllChannelTabs,
+        {
+          key: 'business-hours',
+          name: this.$t('INBOX_MGMT.TABS.BUSINESS_HOURS'),
+        },
+        {
+          key: 'csat',
+          name: this.$t('INBOX_MGMT.TABS.CSAT'),
+        },
+      ];
 
       if (this.isAWebWidgetInbox) {
         visibleToAllChannelTabs = [
@@ -190,12 +272,10 @@ export default {
         this.isATwilioChannel ||
         this.isALineChannel ||
         this.isAPIInbox ||
-        this.isAVoiceChannel ||
         (this.isAnEmailChannel && !this.inbox.provider) ||
         this.shouldShowWhatsAppConfiguration ||
         this.isAWebWidgetInbox ||
-        this.isAWhatsAppBaileysChannel ||
-        this.isAWhatsAppZapiChannel
+        this.isASessionWhatsAppChannel
       ) {
         visibleToAllChannelTabs = [
           ...visibleToAllChannelTabs,
@@ -227,6 +307,51 @@ export default {
         ];
       }
 
+      if (this.shouldShowTwilioHealth) {
+        visibleToAllChannelTabs = [
+          ...visibleToAllChannelTabs,
+          {
+            key: 'twilio-health',
+            name: this.$t('INBOX_MGMT.TABS.ACCOUNT_HEALTH'),
+          },
+        ];
+      }
+
+      if (
+        this.isATwilioChannel &&
+        this.inbox.phone_number &&
+        this.inbox.medium === 'sms' &&
+        this.isFeatureEnabledonAccount(
+          this.accountId,
+          FEATURE_FLAGS.CHANNEL_VOICE
+        )
+      ) {
+        visibleToAllChannelTabs = [
+          ...visibleToAllChannelTabs,
+          {
+            key: 'voice-configuration',
+            name: this.$t('INBOX_MGMT.TABS.VOICE'),
+          },
+        ];
+      }
+
+      if (
+        (this.isAWhatsAppCloudChannel ||
+          this.hasInboxCapability(CAPABILITIES.VOICE_CALLS)) &&
+        this.isFeatureEnabledonAccount(
+          this.accountId,
+          FEATURE_FLAGS.CHANNEL_VOICE
+        )
+      ) {
+        visibleToAllChannelTabs = [
+          ...visibleToAllChannelTabs,
+          {
+            key: 'calls-configuration',
+            name: this.$t('INBOX_MGMT.TABS.CALLS'),
+          },
+        ];
+      }
+
       return visibleToAllChannelTabs;
     },
     currentInboxId() {
@@ -236,8 +361,12 @@ export default {
       return this.$store.getters['inboxes/getInbox'](this.currentInboxId);
     },
     inboxIcon() {
-      const { medium, channel_type: type } = this.inbox;
-      return getInboxIconByType(type, medium, 'line');
+      const {
+        medium,
+        channel_type: type,
+        voice_enabled: voiceEnabled,
+      } = this.inbox;
+      return getInboxIconByType(type, medium, 'line', voiceEnabled);
     },
     bannerMaxWidth() {
       const narrowTabs = ['collaborators', 'bot-configuration'];
@@ -249,18 +378,10 @@ export default {
       return 'max-w-7xl';
     },
     inboxName() {
-      if (this.isATwilioSMSChannel || this.isATwilioWhatsAppChannel) {
-        return `${this.inbox.name} (${
-          this.inbox.messaging_service_sid || this.inbox.phone_number
-        })`;
-      }
-      if (this.isAWhatsAppChannel) {
-        return `${this.inbox.name} (${this.inbox.phone_number})`;
-      }
-      if (this.isAnEmailChannel) {
-        return `${this.inbox.name} (${this.inbox.email})`;
-      }
       return this.inbox.name;
+    },
+    inboxIdentifier() {
+      return getInboxIdentifier(this.inbox);
     },
     canLocktoSingleConversation() {
       return (
@@ -297,6 +418,20 @@ export default {
     },
     instagramUnauthorized() {
       return this.isAnInstagramChannel && this.inbox.reauthorization_required;
+    },
+    // Every tab, not just Configuration: a session inbox that dropped, or one just converted
+    // and never paired, has nothing else on this page saying it cannot send or receive.
+    showSessionDisconnectedBanner() {
+      return (
+        this.isASessionWhatsAppChannel &&
+        isProviderOffline(this.inbox.provider_connection)
+      );
+    },
+    showInstagramRestrictionSettingsBanner() {
+      return this.isMetaMessageSendingDisabled && this.isAnInstagramChannel;
+    },
+    metaRestrictionStatusUrl() {
+      return META_RESTRICTION_STATUS_URL;
     },
     tiktokUnauthorized() {
       return this.isATiktokChannel && this.inbox.reauthorization_required;
@@ -351,17 +486,38 @@ export default {
         this.healthData.throughput?.level === 'NOT_APPLICABLE'
       );
     },
+    showWhatsAppManualMigration() {
+      return (
+        this.isAWhatsAppCloudChannel &&
+        this.isEmbeddedSignupWhatsApp &&
+        this.healthData?.is_on_biz_app === false &&
+        this.healthError?.type !== 'authorization' &&
+        this.isFeatureEnabledonAccount(
+          this.accountId,
+          FEATURE_FLAGS.WHATSAPP_MANUAL_TRANSFER
+        )
+      );
+    },
     widgetBuilderStorageKey() {
       return `${LOCAL_STORAGE_KEYS.WIDGET_BUILDER}${this.inbox.id}`;
     },
   },
   watch: {
+    // On a direct visit the inbox arrives after mount, so the catalog is fetched once the
+    // page knows it is a WhatsApp inbox rather than at mount.
+    isAWhatsAppChannel: {
+      handler(isWhatsApp) {
+        if (isWhatsApp) this.fetchWhatsappSessionProviders();
+      },
+      immediate: true,
+    },
     $route(to, from) {
       if (to.name === 'settings_inbox_show') {
         const inboxChanged = to.params.inboxId !== from.params.inboxId;
         if (inboxChanged) {
           this.syncInboxData();
           this.setTabFromRouteParam();
+          this.openWhatsAppManualMigrationIfRequested();
         }
       }
     },
@@ -372,6 +528,8 @@ export default {
           this.fetchHealthData();
           this.$nextTick(() => {
             this.setTabFromRouteParam();
+            this.openWhatsAppManualMigrationIfRequested();
+            this.openLinkDeviceModalIfRequested();
           });
         } else {
           this.selectedFeatureFlags = newInbox?.selected_feature_flags || [];
@@ -382,8 +540,65 @@ export default {
   },
   mounted() {
     this.fetchSharedData();
+    this.openWhatsAppManualMigrationIfRequested();
+  },
+  // The settings wrapper keeps this page alive per full path, so a conversion can land on
+  // an instance that is reactivated rather than mounted, and no watcher fires for it.
+  activated() {
+    this.openLinkDeviceModalIfRequested();
   },
   methods: {
+    // A conversion to a provider paired by QR leaves the inbox with no session, and the
+    // pairing is the one thing left to do. Read wherever the page can first see that the
+    // inbox has a session: on activation, or once a late inbox arrives.
+    openLinkDeviceModalIfRequested() {
+      if (!this.isASessionWhatsAppChannel) return;
+      if (consumePairingRequest(this.inbox.id)) this.showLinkDeviceModal = true;
+    },
+    openWhatsAppManualMigrationDialog() {
+      this.$refs.whatsappManualMigrationDialog?.open();
+    },
+    openWhatsAppManualMigrationIfRequested() {
+      if (
+        this.showWhatsAppManualMigration &&
+        this.$route.query.migration === 'whatsapp_manual'
+      ) {
+        this.$nextTick(() => {
+          this.openWhatsAppManualMigrationDialog();
+        });
+      }
+    },
+    async transferWhatsAppToManualSetup(form) {
+      this.isTransferringWhatsAppToManual = true;
+      try {
+        const providerConfig = { ...(this.inbox.provider_config || {}) };
+        delete providerConfig.source;
+        const payload = {
+          id: this.inbox.id,
+          formData: false,
+          channel: {
+            provider_config: {
+              ...providerConfig,
+              phone_number_id: form.phoneNumberId,
+              business_account_id: form.wabaId,
+              api_key: form.accessToken,
+              app_secret: form.appSecret,
+            },
+          },
+        };
+        await this.$store.dispatch('inboxes/updateInbox', payload);
+        useAlert(
+          this.$t('INBOX_MGMT.SETTINGS_POPUP.WHATSAPP_MANUAL_TRANSFER_SUCCESS')
+        );
+        this.$refs.whatsappManualMigrationDialog?.close();
+      } catch (error) {
+        useAlert(
+          this.$t('INBOX_MGMT.SETTINGS_POPUP.WHATSAPP_MANUAL_TRANSFER_ERROR')
+        );
+      } finally {
+        this.isTransferringWhatsAppToManual = false;
+      }
+    },
     async copyWebhookSecret(value) {
       await copyTextToClipboard(value);
       useAlert(
@@ -458,19 +673,40 @@ export default {
     async fetchHealthData() {
       if (!this.inbox) return;
 
-      if (!this.isAWhatsAppCloudChannel) {
+      if (!this.isAWhatsAppCloudChannel && !this.shouldShowTwilioHealth) {
         return;
       }
 
       try {
         this.isLoadingHealth = true;
-        this.healthError = null;
+        // Cleared with the answer, not before asking. Until #593 there was nothing to press in the
+        // error state, so the gap between the two never had a viewer; now the operator presses
+        // Register, the re-read starts, and clearing the error here would drop the screen into the
+        // "nothing is known" state for as long as the read takes, which with a quiet Meta is the
+        // whole 10s ceiling: the error card, the provider message and the button all disappear and
+        // come back.
         const response = await InboxHealthAPI.getHealthStatus(this.inbox.id);
         this.healthData = response.data;
+        this.healthError = null;
       } catch (error) {
-        this.healthError = error.message || 'Failed to fetch health data';
+        const apiError = error.response?.data?.error;
+        this.healthError =
+          typeof apiError === 'object'
+            ? apiError
+            : {
+                type: 'generic',
+                message: apiError || error.message,
+              };
       } finally {
         this.isLoadingHealth = false;
+      }
+    },
+    goToWhatsAppConfiguration() {
+      const configurationTabIndex = this.tabs.findIndex(
+        tab => tab.key === 'configuration'
+      );
+      if (configurationTabIndex !== -1) {
+        this.onTabChange(configurationTabIndex);
       }
     },
     async registerWebhook() {
@@ -478,12 +714,36 @@ export default {
 
       try {
         this.isRegisteringWebhook = true;
-        await InboxHealthAPI.registerWebhook(this.inbox.id);
-        useAlert(this.$t('INBOX_MGMT.ACCOUNT_HEALTH.WEBHOOK.REGISTER_SUCCESS'));
-        await this.fetchHealthData();
-      } catch (error) {
+        const { data } = await InboxHealthAPI.registerWebhook(this.inbox.id);
+        // Meta refuses the per-number override for a whole class of accounts, and that refusal no
+        // longer takes the channel down, so a plain success here would be the only thing the
+        // operator sees about a write that did not land. The flag is about that write and nothing
+        // else: it reads `false` for a refusal, for a 500 and for a connection that closed, so the
+        // sentence sends the reader to the card instead of claiming where delivery goes.
         useAlert(
-          error.message ||
+          data?.callback_override_applied === false
+            ? this.$t(
+                'INBOX_MGMT.ACCOUNT_HEALTH.WEBHOOK.REGISTER_SUCCESS_WITHOUT_ROUTING'
+              )
+            : this.$t('INBOX_MGMT.ACCOUNT_HEALTH.WEBHOOK.REGISTER_SUCCESS')
+        );
+        // The answer already carries the routing Meta reported after the write, so the card comes
+        // from it instead of a second round trip. When that read did not come back the field says
+        // so, and then the card is fetched rather than left showing what it had before the press.
+        if (data?.routing_read_back) {
+          // The error has to go with it. Until #593 the screen could not be repaired from the error
+          // state at all, so nothing ever reached this line holding a stale failure; now it can,
+          // and leaving `healthError` set would keep the error card over a reading that came back.
+          this.healthData = data.health;
+          this.healthError = null;
+        } else {
+          await this.fetchHealthData();
+        }
+      } catch (error) {
+        // Same as the health fetch: the provider's own message is the actionable part.
+        useAlert(
+          error.response?.data?.error ||
+            error.message ||
             this.$t('INBOX_MGMT.ACCOUNT_HEALTH.WEBHOOK.REGISTER_ERROR')
         );
       } finally {
@@ -561,7 +821,8 @@ export default {
             welcome_tagline: this.channelWelcomeTagline || '',
             selectedFeatureFlags: this.selectedFeatureFlags,
             reply_time: this.replyTime || 'in_a_few_minutes',
-            continuity_via_email: this.continuityViaEmail,
+            continuity_via_email:
+              this.isInboundEmailEnabled && this.continuityViaEmail,
           },
         };
         if (this.avatarFile) {
@@ -610,20 +871,30 @@ export default {
     toggleLockToSingleConversation(value) {
       this.locktoSingleConversation = value;
     },
-    openConvertGate() {
+    openConvertGate(target = null) {
+      this.convertTarget = target;
       this.showConvertGate = true;
     },
     closeConvertGate() {
       this.showConvertGate = false;
     },
+    // The legacy banner goes through the same gate as the provider field's button: the
+    // conversion is the same act whichever button asked for it. It only arrives with the
+    // native provider already picked.
+    openConvertGateToNative() {
+      this.openConvertGate('native');
+    },
     goToConvert() {
+      const provider = this.convertTarget;
       this.showConvertGate = false;
+      this.convertTarget = null;
       this.$router.push({
         name: 'settings_inbox_convert',
         params: {
           accountId: this.$route.params.accountId,
           inboxId: this.inbox.id,
         },
+        ...(provider ? { query: { provider } } : {}),
       });
     },
   },
@@ -650,6 +921,7 @@ export default {
     <SettingIntroBanner
       :header-image="inbox.avatarUrl"
       :header-title="inboxName"
+      :header-identifier="inboxIdentifier"
     >
       <woot-tabs
         class="[&_ul]:p-0 top-px relative"
@@ -711,6 +983,56 @@ export default {
           :content="$t('INBOX_MGMT.ADD.INSTAGRAM.DUPLICATE_INBOX_BANNER')"
           class="mx-6 mb-4"
           :class="bannerMaxWidth"
+        />
+        <Banner
+          v-if="showInstagramRestrictionSettingsBanner"
+          color="amber"
+          class="mx-6 mb-4 max-w-4xl"
+        >
+          <div class="flex items-start gap-3 text-start">
+            <Icon
+              icon="i-lucide-triangle-alert"
+              class="flex-shrink-0 size-4 mt-0.5"
+            />
+            <span>
+              {{ $t('INBOX_MGMT.ADD.INSTAGRAM.SETTINGS_RESTRICTED_WARNING') }}
+              <a
+                :href="metaRestrictionStatusUrl"
+                class="link underline"
+                rel="noopener noreferrer nofollow"
+                target="_blank"
+              >
+                {{ $t('INBOX_MGMT.ADD.INSTAGRAM.STATUS_LINK') }}
+              </a>
+            </span>
+          </div>
+        </Banner>
+        <Banner
+          v-if="showSessionDisconnectedBanner"
+          color="ruby"
+          :action-label="
+            $t('INBOX_MGMT.SETTINGS_POPUP.WHATSAPP_DISCONNECTED.CONNECT')
+          "
+          class="mx-6 mb-4"
+          :class="bannerMaxWidth"
+          data-testid="whatsapp-session-disconnected-banner"
+          @action="showLinkDeviceModal = true"
+        >
+          {{ $t('INBOX_MGMT.SETTINGS_POPUP.WHATSAPP_DISCONNECTED.MESSAGE') }}
+        </Banner>
+        <WhatsappLegacyProviderBanner
+          v-if="isLegacyWhatsAppProvider"
+          :native-available="isNativeWhatsAppAvailable"
+          can-convert
+          class="mx-6 mb-4"
+          :class="bannerMaxWidth"
+          @convert="openConvertGateToNative"
+        />
+        <WhatsappManualMigrationBanner
+          v-if="showWhatsAppManualMigration"
+          class="mx-6 mb-6"
+          :class="bannerMaxWidth"
+          @start="openWhatsAppManualMigrationDialog"
         />
 
         <div
@@ -825,13 +1147,12 @@ export default {
                   slate
                   sm
                   :label="$t('INBOX_MGMT.CONVERT.BUTTON')"
-                  @click="openConvertGate"
+                  @click="openConvertGate()"
                 />
               </div>
             </SettingsFieldSection>
 
             <SettingsFieldSection
-              v-if="!isAVoiceChannel"
               :label="$t('INBOX_MGMT.HELP_CENTER.LABEL')"
               :help-text="$t('INBOX_MGMT.HELP_CENTER.SUB_TEXT')"
             >
@@ -1192,15 +1513,15 @@ export default {
               />
 
               <SettingsToggleSection
-                v-if="isAWebWidgetInbox"
+                v-if="isAWebWidgetInbox && showContinuityToggle"
                 v-model="continuityViaEmail"
                 :header="
                   $t('INBOX_MGMT.SETTINGS_POPUP.ENABLE_CONTINUITY_VIA_EMAIL')
                 "
-                :description="
-                  $t(
-                    'INBOX_MGMT.SETTINGS_POPUP.ENABLE_CONTINUITY_VIA_EMAIL_SUB_TEXT'
-                  )
+                :description="continuityDescription"
+                :hide-toggle="isContinuityDisabled"
+                :class="
+                  isContinuityDisabled ? 'cursor-not-allowed opacity-50' : ''
                 "
               />
             </SettingsAccordion>
@@ -1259,6 +1580,18 @@ export default {
         >
           <ConfigurationPage :inbox="inbox" />
         </div>
+        <div
+          v-if="selectedTabKey === 'voice-configuration'"
+          class="mx-6 max-w-4xl"
+        >
+          <VoiceConfigurationPage :inbox="inbox" />
+        </div>
+        <div
+          v-if="selectedTabKey === 'calls-configuration'"
+          class="mx-6 max-w-4xl"
+        >
+          <WhatsappCallingPage :inbox="inbox" />
+        </div>
         <div v-if="selectedTabKey === 'csat'">
           <CustomerSatisfactionPage :inbox="inbox" />
         </div>
@@ -1274,10 +1607,29 @@ export default {
         <div v-if="selectedTabKey === 'whatsapp-health'">
           <AccountHealth
             :health-data="healthData"
+            :health-error="healthError"
+            :is-embedded-signup="isEmbeddedSignupWhatsApp"
+            :is-registering-webhook="isRegisteringWebhook"
+            @register-webhook="registerWebhook"
+            @go-to-configuration="goToWhatsAppConfiguration"
+          />
+        </div>
+        <div v-if="selectedTabKey === 'twilio-health'">
+          <TwilioHealth
+            :health-data="healthData"
+            :is-loading="isLoadingHealth"
+            :error="healthErrorMessage"
             :is-registering-webhook="isRegisteringWebhook"
             @register-webhook="registerWebhook"
           />
         </div>
+        <WhatsappManualMigrationDialog
+          v-if="showWhatsAppManualMigration"
+          ref="whatsappManualMigrationDialog"
+          :inbox="inbox"
+          :is-loading="isTransferringWhatsAppToManual"
+          @reconnect="transferWhatsAppToManualSetup"
+        />
       </div>
     </section>
     <ConvertInboxModal
@@ -1287,6 +1639,12 @@ export default {
       :current-provider="whatsAppAPIProviderName"
       @on-confirm="goToConvert"
       @on-close="closeConvertGate"
+    />
+    <WhatsappLinkDeviceModal
+      v-if="showLinkDeviceModal"
+      :show="showLinkDeviceModal"
+      :on-close="() => (showLinkDeviceModal = false)"
+      :inbox="inbox"
     />
   </div>
 </template>

@@ -4,14 +4,14 @@ import { useRoute, useRouter } from 'vue-router';
 import { useStore } from 'vuex';
 import Whatsapp from './channels/Whatsapp.vue';
 import { INBOX_TYPES } from 'dashboard/helper/inbox';
+import { SESSION_PROVIDERS } from 'dashboard/helper/whatsappSession';
 
 // Mirrors Settings.vue's `isConvertibleWhatsAppChannel` so a direct visit to
 // /convert cannot bypass the provider allowlist exposed by the Convert button.
 const CONVERTIBLE_WHATSAPP_PROVIDERS = [
   'whatsapp_cloud',
   'default',
-  'baileys',
-  'zapi',
+  ...SESSION_PROVIDERS,
 ];
 
 const route = useRoute();
@@ -55,7 +55,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="w-full h-full overflow-auto">
-    <Whatsapp v-if="inbox?.id" mode="convert" :inbox="inbox" />
+  <div class="mx-auto flex flex-col gap-6 mb-8 max-w-7xl w-full !px-6">
+    <div
+      class="grid grid-cols-6 rounded-xl border border-n-weak h-full min-h-[50dvh]"
+    >
+      <Whatsapp v-if="inbox?.id" mode="convert" :inbox="inbox" />
+    </div>
   </div>
 </template>

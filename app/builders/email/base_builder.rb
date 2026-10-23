@@ -25,23 +25,20 @@ class Email::BaseBuilder
     # Friendly: <agent_name> from <business_name>
     # Professional: <business_name>
     if inbox.friendly?
-      I18n.t(
-        'conversations.reply.email.header.friendly_name',
+      Email::SenderNameBuilder.new(
+        account: account,
+        sender: message&.sender,
+        sender_email: sender_email,
         sender_name: custom_sender_name,
-        business_name: business_name,
-        from_email: sender_email
-      )
+        business_name: business_name
+      ).build
     else
-      I18n.t(
-        'conversations.reply.email.header.professional_name',
-        business_name: business_name,
-        from_email: sender_email
-      )
+      format_email_with_name(business_name, sender_email)
     end
   end
 
   def business_name
-    inbox.business_name || inbox.sanitized_name
+    inbox.sanitized_business_name
   end
 
   def account_support_email
